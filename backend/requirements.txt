@@ -1,0 +1,32 @@
+# Momentus AI Backend
+# Python 3.9+
+
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database
+aiosqlite==0.19.0
+
+# HTTP client (async)
+httpx==0.25.2
+
+# HTML parsing & cleaning
+beautifulsoup4==4.12.2
+lxml==4.9.4
+readability-lxml==0.8.1
+
+# Claude API
+anthropic==0.39.0
+
+# Data validation (comes with fastapi but pin it)
+pydantic==2.5.2
+pydantic-settings==2.1.0
+
+# CSV handling (stdlib but explicit)
+# csv — built-in
+
+# Utilities
+python-dotenv==1.0.0
+tenacity==8.2.3
