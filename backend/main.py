@@ -167,6 +167,10 @@ app.include_router(ops_router)
 # HEALTH & STATUS
 # ═══════════════════════════════════════════════════════════════
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "Momentus AI API", "version": "1.0.0"}
+
 @app.get("/api/health")
 async def health():
     return {

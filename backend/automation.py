@@ -219,12 +219,9 @@ async def init_automation():
     """Initialize automation tables."""
     from .database import get_db
     db = await get_db()
-    try:
-        await db.executescript(AUTOMATION_SCHEMA)
-        await db.commit()
-        logger.info("Automation tables initialized")
-    finally:
-        await db.close()
+    await db.executescript(AUTOMATION_SCHEMA)
+    await db.commit()
+    logger.info("Automation tables initialized")
     # Seed default playbooks
     existing = await fetch_one("SELECT id FROM playbooks LIMIT 1")
     if not existing:

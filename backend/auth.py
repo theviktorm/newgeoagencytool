@@ -339,11 +339,8 @@ async def init_auth():
     """Initialize auth tables and create default superadmin if none exists."""
     from .database import get_db
     db = await get_db()
-    try:
-        await db.executescript(AUTH_SCHEMA)
-        await db.commit()
-    finally:
-        await db.close()
+    await db.executescript(AUTH_SCHEMA)
+    await db.commit()
 
     admin = await fetch_one("SELECT id FROM users WHERE role = 'superadmin' LIMIT 1")
     if not admin:
