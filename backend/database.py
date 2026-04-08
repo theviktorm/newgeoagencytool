@@ -272,31 +272,49 @@ CREATE INDEX IF NOT EXISTS idx_prompts_project ON prompt_templates(project_id);
 
 
 # ═══════════════════════════════════════════════════════════════
-# DATABASE ACCESS
+# DATABASE ACCESS — Connection Pool
+# Reuses a single persistent connection instead of open/close per query.
 # ═══════════════════════════════════════════════════════════════
 
+import asyncio
+
+_db_pool: Optional[aiosqlite.Connection] = None
+_db_lock = asyncio.Lock()
+
+
 async def get_db() -> aiosqlite.Connection:
-    """Get a database connection with WAL mode and foreign keys."""
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    return db
+    """Get the shared database connection (lazy-initialized, reused)."""
+    global _db_pool
+    if _db_pool is None or not _db_pool._running:
+        async with _db_lock:
+            if _db_pool is None or not _db_pool._running:
+                _db_pool = await aiosqlite.connect(DB_PATH)
+                _db_pool.row_factory = aiosqlite.Row
+                await _db_pool.execute("PRAGMA journal_mode=WAL")
+                await _db_pool.execute("PRAGMA foreign_keys=ON")
+                await _db_pool.execute("PRAGMA busy_timeout=5000")
+                await _db_pool.execute("PRAGMA cache_size=-20000")  # 20MB cache
+                await _db_pool.execute("PRAGMA synchronous=NORMAL")
+    return _db_pool
+
+
+async def close_db():
+    """Close the shared connection (call on shutdown)."""
+    global _db_pool
+    if _db_pool and _db_pool._running:
+        await _db_pool.close()
+        _db_pool = None
 
 
 async def init_db():
     """Initialize database schema. Safe to call multiple times."""
     db = await get_db()
-    try:
-        await db.executescript(SCHEMA)
-        # Ensure default project exists
-        await db.execute(
-            "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
-            (settings.project_id, settings.project_name),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.executescript(SCHEMA)
+    await db.execute(
+        "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
+        (settings.project_id, settings.project_name),
+    )
+    await db.commit()
 
 
 def gen_id(prefix: str = "") -> str:
@@ -306,58 +324,43 @@ def gen_id(prefix: str = "") -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# QUERY HELPERS
+# QUERY HELPERS — all reuse the shared connection
 # ═══════════════════════════════════════════════════════════════
 
 async def fetch_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
     db = await get_db()
-    try:
-        cursor = await db.execute(query, params)
-        row = await cursor.fetchone()
-        return dict(row) if row else None
-    finally:
-        await db.close()
+    cursor = await db.execute(query, params)
+    row = await cursor.fetchone()
+    return dict(row) if row else None
 
 
 async def fetch_all(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
     db = await get_db()
-    try:
-        cursor = await db.execute(query, params)
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        await db.close()
+    cursor = await db.execute(query, params)
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
 
 
 async def execute(query: str, params: tuple = ()) -> int:
     db = await get_db()
-    try:
-        cursor = await db.execute(query, params)
-        await db.commit()
-        return cursor.rowcount
-    finally:
-        await db.close()
+    cursor = await db.execute(query, params)
+    await db.commit()
+    return cursor.rowcount
 
 
 async def execute_many(query: str, params_list: List[tuple]) -> int:
     db = await get_db()
-    try:
-        await db.executemany(query, params_list)
-        await db.commit()
-        return len(params_list)
-    finally:
-        await db.close()
+    await db.executemany(query, params_list)
+    await db.commit()
+    return len(params_list)
 
 
 async def insert_returning_id(query: str, params: tuple) -> str:
     """Insert and return the last row id (for TEXT PKs, pass id in params)."""
     db = await get_db()
-    try:
-        await db.execute(query, params)
-        await db.commit()
-        return params[0]  # first param is always our generated id
-    finally:
-        await db.close()
+    await db.execute(query, params)
+    await db.commit()
+    return params[0]
 
 
 # ═══════════════════════════════════════════════════════════════

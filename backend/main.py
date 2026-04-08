@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from .database import (
-    check_cost_limit, execute, fetch_all, fetch_one,
+    check_cost_limit, close_db, execute, fetch_all, fetch_one,
     from_json, gen_id, get_daily_cost, get_monthly_cost,
     init_db, to_json,
 )
@@ -73,13 +73,15 @@ app.add_middleware(
 )
 
 # ═══════════════════════════════════════════════════════════════
-# RATE LIMITING (in-memory, per-IP)
+# RATE LIMITING (sliding window, bounded memory)
 # ═══════════════════════════════════════════════════════════════
-_rate_limit_store: Dict[str, List[float]] = defaultdict(list)
+from collections import deque
+_rate_limit_store: Dict[str, deque] = {}
+_RATE_LIMIT_MAX_IPS = 10000  # prevent unbounded memory growth
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    """Simple rate limiter: N requests per minute per IP."""
+    """Sliding window rate limiter: N requests per minute per IP."""
     if settings.rate_limit_per_minute <= 0:
         return await call_next(request)
 
@@ -87,18 +89,26 @@ async def rate_limit_middleware(request: Request, call_next):
     now = time.time()
     window = 60.0
 
-    # Clean old entries
-    _rate_limit_store[client_ip] = [
-        t for t in _rate_limit_store[client_ip] if now - t < window
-    ]
+    if client_ip not in _rate_limit_store:
+        # Evict oldest IP if store is too large
+        if len(_rate_limit_store) >= _RATE_LIMIT_MAX_IPS:
+            oldest_ip = next(iter(_rate_limit_store))
+            del _rate_limit_store[oldest_ip]
+        _rate_limit_store[client_ip] = deque()
 
-    if len(_rate_limit_store[client_ip]) >= settings.rate_limit_per_minute:
+    timestamps = _rate_limit_store[client_ip]
+
+    # Efficiently remove old entries from the left
+    while timestamps and now - timestamps[0] >= window:
+        timestamps.popleft()
+
+    if len(timestamps) >= settings.rate_limit_per_minute:
         return JSONResponse(
             status_code=429,
             content={"success": False, "error": "Rate limit exceeded. Try again in a minute."},
         )
 
-    _rate_limit_store[client_ip].append(now)
+    timestamps.append(now)
     return await call_next(request)
 
 # ═══════════════════════════════════════════════════════════════
@@ -139,6 +149,11 @@ async def startup():
     logger.info("Initializing automation engine...")
     await init_automation()
     logger.info("Momentus AI ready on port %s", settings.port)
+
+@app.on_event("shutdown")
+async def shutdown():
+    logger.info("Shutting down — closing database connection...")
+    await close_db()
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT DASHBOARD & AUTH ROUTERS
@@ -205,6 +220,8 @@ async def peec_import_csv(
         raise HTTPException(400, "File must be a .csv")
 
     content = await file.read()
+    if len(content) > 50 * 1024 * 1024:  # 50MB limit
+        raise HTTPException(400, "CSV file too large (max 50MB)")
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:

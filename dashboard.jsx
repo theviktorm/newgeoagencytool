@@ -84,15 +84,35 @@ function reducer(state, action) {
 // API HELPERS
 // ═══════════════════════════════════════════════════════════════
 
+// Global auth error callback — set by App to trigger logout on 401
+let _onAuthError = null;
+function setAuthErrorHandler(fn) { _onAuthError = fn; }
+
 async function api(path, opts = {}, token = null) {
   const headers = {};
-  // Only set Content-Type for non-FormData requests
   if (!(opts.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
   if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  // Add 30s timeout to all requests
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
   try {
-    const res = await fetch(`${API}${path}`, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    const res = await fetch(`${API}${path}`, {
+      ...opts,
+      headers: { ...headers, ...(opts.headers || {}) },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    // Handle 401 — token expired or invalid
+    if (res.status === 401) {
+      if (_onAuthError) _onAuthError();
+      throw new Error('Session expired. Please sign in again.');
+    }
+
     const data = await res.json();
     if (!res.ok) {
       const msg = data.detail || data.error || `HTTP ${res.status}`;
@@ -100,6 +120,10 @@ async function api(path, opts = {}, token = null) {
     }
     return data;
   } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out. The server may be busy.');
+    }
     if (err.message?.includes('Failed to fetch')) {
       throw new Error('Backend not reachable. Check that the API server is running.');
     }
@@ -360,6 +384,32 @@ function Header({ state }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PAGINATION HELPER
+// ═══════════════════════════════════════════════════════════════
+
+function usePagination(items, perPage = 25) {
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil((items?.length || 0) / perPage));
+  const safeP = Math.min(page, totalPages - 1);
+  const paged = (items || []).slice(safeP * perPage, (safeP + 1) * perPage);
+  return { page: safeP, setPage, totalPages, paged, total: items?.length || 0 };
+}
+
+function PaginationBar({ page, totalPages, setPage, total, label = 'items' }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+      <span>{total} {label}</span>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <button className="btn btn-sm" disabled={page <= 0} onClick={() => setPage(page - 1)}>Prev</button>
+        <span style={{ fontFamily: 'var(--font-mono)', padding: '0 8px' }}>{page + 1} / {totalPages}</span>
+        <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // CHART COMPONENTS
 // ═══════════════════════════════════════════════════════════════
 
@@ -400,7 +450,10 @@ function MiniSparkline({ values, color = 'var(--blue)', width = 120, height = 32
 }
 
 function DonutChart({ segments, size = 140 }) {
-  const total = segments.reduce((s, seg) => s + seg.value, 0) || 1;
+  if (!segments?.length || segments.every(s => !s.value)) {
+    return <div style={{ width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 11 }}>No data</div>;
+  }
+  const total = segments.reduce((s, seg) => s + (seg.value || 0), 0) || 1;
   let cumulative = 0;
   const r = size / 2;
   const innerR = r * 0.6;
@@ -448,7 +501,7 @@ function OverviewPage({ state, dispatch }) {
       .then(res => {
         if (res.success) dispatch({ type: 'SET_OVERVIEW', data: res.data });
       })
-      .catch(() => {})
+      .catch(err => console.warn('API:', err.message))
       .finally(() => dispatch({ type: 'SET_LOADING', key: 'overview', value: false }));
   }, [wsId]);
 
@@ -647,7 +700,7 @@ function PerformancePage({ state, dispatch }) {
       .then(res => {
         if (res.success) dispatch({ type: 'SET_PERFORMANCE', data: res.data });
       })
-      .catch(() => {})
+      .catch(err => console.warn('API:', err.message))
       .finally(() => dispatch({ type: 'SET_LOADING', key: 'performance', value: false }));
   }, [wsId, days]);
 
@@ -744,7 +797,7 @@ function DeltasPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/dashboard/deltas/${wsId}`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_DELTAS', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const d = state.deltas;
@@ -820,7 +873,7 @@ function ModelsPage({ state, dispatch }) {
     if (!wsId || perf) return;
     api(`/api/dashboard/performance/${wsId}?days=30`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_PERFORMANCE', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const models = perf?.model_breakdown || [];
@@ -919,7 +972,7 @@ function PipelineActivityPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/dashboard/pipeline-activity/${wsId}?days=7`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_ACTIVITY', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const act = state.activity || {};
@@ -987,7 +1040,7 @@ function CampaignsPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/workspaces/${wsId}/campaigns`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_CAMPAIGNS', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleCreate = async () => {
@@ -1084,7 +1137,7 @@ function ReportsPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/dashboard/reports/${wsId}`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_REPORTS', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleGenerate = async () => {
@@ -1376,7 +1429,7 @@ function UsersPage({ state, dispatch }) {
   useEffect(() => {
     api('/api/dashboard/users', {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_USERS', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, []);
 
   const handleInvite = async () => {
@@ -1495,7 +1548,7 @@ function AuditPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/dashboard/audit/${wsId}`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_AUDIT', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const actionColors = {
@@ -1574,7 +1627,7 @@ function SettingsPage({ state, dispatch }) {
             color_accent: d.color_accent || '#10B981',
           });
         }
-      }).catch(() => {});
+      }).catch(err => console.warn('API:', err.message));
   }, [ws?.id]);
 
   const handleSave = async () => {
@@ -1753,7 +1806,7 @@ function MetricTargets({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/dashboard/metrics/${wsId}`, {}, state.token)
       .then(res => { if (res.success) dispatch({ type: 'SET_METRICS', data: res.data }); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleAdd = async () => {
@@ -1818,7 +1871,7 @@ function TaskBoardPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/ops/tasks/${wsId}`, {}, state.token)
       .then(res => { if (res.success) setBoard(res.data); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   };
   useEffect(loadBoard, [wsId]);
 
@@ -1923,7 +1976,7 @@ function PlaybooksPage({ state }) {
   useEffect(() => {
     api('/api/ops/playbooks', {}, state.token)
       .then(res => { if (res.success) setPlaybooks(res.data); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   }, []);
 
   const catColors = { onboarding: 'emerald', generation: 'blue', reporting: 'amber', general: 'purple' };
@@ -2002,7 +2055,7 @@ function CompetitorsPage({ state, dispatch }) {
     if (!wsId) return;
     api(`/api/ops/competitors/${wsId}`, {}, state.token)
       .then(res => { if (res.success) setCompetitors(res.data); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   };
   useEffect(load, [wsId]);
 
@@ -2066,7 +2119,7 @@ function RecommendationsPage({ state }) {
     if (!wsId) return;
     api(`/api/ops/recommendations/${wsId}?status=${filter}`, {}, state.token)
       .then(res => { if (res.success) setRecs(res.data); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   };
   useEffect(load, [wsId, filter]);
 
@@ -2129,7 +2182,7 @@ function OnboardingPage({ state }) {
       .then(res => {
         if (res.success && res.data) { setOb(res.data); setForm(res.data); }
         else setForm({ status: 'pending', domain_info: '', target_topics: [], competitors: [], brand_voice_notes: '', cms_type: '', cms_access: 0, approval_workflow: '', notes: '' });
-      }).catch(() => {});
+      }).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleSave = async () => {
@@ -2222,7 +2275,7 @@ function BillingPage({ state }) {
     if (!wsId) return;
     api(`/api/ops/billing/${wsId}`, {}, state.token)
       .then(res => { if (res.success) setRecords(res.data); })
-      .catch(() => {});
+      .catch(err => console.warn('API:', err.message));
   };
   useEffect(load, [wsId]);
 
@@ -2285,8 +2338,8 @@ function JobQueuePage({ state }) {
 
   const load = () => {
     if (!wsId) return;
-    api(`/api/ops/jobs/${wsId}?status=${filter}`, {}, state.token).then(res => { if (res.success) setJobs(res.data); }).catch(() => {});
-    api(`/api/ops/jobs/${wsId}/stats`, {}, state.token).then(res => { if (res.success) setStats(res.data); }).catch(() => {});
+    api(`/api/ops/jobs/${wsId}?status=${filter}`, {}, state.token).then(res => { if (res.success) setJobs(res.data); }).catch(err => console.warn('API:', err.message));
+    api(`/api/ops/jobs/${wsId}/stats`, {}, state.token).then(res => { if (res.success) setStats(res.data); }).catch(err => console.warn('API:', err.message));
   };
   useEffect(load, [wsId, filter]);
 
@@ -2354,7 +2407,7 @@ function AutomationsPage({ state }) {
 
   const load = () => {
     if (!wsId) return;
-    api(`/api/ops/automations/${wsId}`, {}, state.token).then(res => { if (res.success) setRules(res.data); }).catch(() => {});
+    api(`/api/ops/automations/${wsId}`, {}, state.token).then(res => { if (res.success) setRules(res.data); }).catch(err => console.warn('API:', err.message));
   };
   useEffect(load, [wsId]);
 
@@ -2448,11 +2501,12 @@ function DataImportPage({ state }) {
   const [apiSyncing, setApiSyncing] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [tab, setTab] = useState('upload');
+  const recPag = usePagination(records, 50);
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.records || [])).catch(() => {});
-    api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r)).catch(() => {});
+    api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.records || [])).catch(err => console.warn('API:', err.message));
+    api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r)).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleCsvImport = async () => {
@@ -2474,7 +2528,7 @@ function DataImportPage({ state }) {
       } else {
         const d = r.data || r;
         setImportResult({ success: true, count: d.records || d.imported || 0, msg: `Imported ${d.records || 0} records, ${d.sources || 0} sources, ${d.clusters || 0} clusters` });
-        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(() => {});
+        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
       }
     } catch (e) {
       const msg = typeof e.message === 'string' ? e.message : JSON.stringify(e.message);
@@ -2494,7 +2548,7 @@ function DataImportPage({ state }) {
         setImportResult({ success: false, msg: r.error || 'Peec API sync failed. Use CSV import instead.' });
       } else {
         setImportResult({ success: true, count: r.data?.imported || 0, msg: 'Peec API sync completed' });
-        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(() => {});
+        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
       }
     } catch (e) {
       const msg = typeof e.message === 'string' ? e.message : JSON.stringify(e.message);
@@ -2586,9 +2640,9 @@ function DataImportPage({ state }) {
           {records.length === 0 ? (
             <div className="empty-state">{'\u21E9'}<br/>No records imported yet. Upload a CSV or sync from the Peec API.</div>
           ) : (
-            <table className="data-table"><thead><tr>
+            <><table className="data-table"><thead><tr>
               <th>Prompt</th><th>URL</th><th>Model</th><th>Citations</th><th>Rate</th><th>Topic</th><th>Imported</th>
-            </tr></thead><tbody>{records.slice(0, 100).map((r, i) => (
+            </tr></thead><tbody>{recPag.paged.map((r, i) => (
               <tr key={i}>
                 <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.prompt || r.query || '—'}</td>
                 <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.url || '—'}</td>
@@ -2599,6 +2653,7 @@ function DataImportPage({ state }) {
                 <td style={{ fontSize: 10, color: 'var(--text-muted)' }}>{r.imported_at ? new Date(r.imported_at).toLocaleDateString() : '—'}</td>
               </tr>
             ))}</tbody></table>
+            <PaginationBar {...recPag} label="records" /></>
           )}
         </div>
       )}
@@ -2651,12 +2706,13 @@ function SourcesPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/sources/' + wsId, {}, token).then(r => setSources(r.sources || [])).catch(() => {});
-    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(() => {});
+    api('/api/sources/' + wsId, {}, token).then(r => setSources(r.sources || [])).catch(err => console.warn('API:', err.message));
+    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const sorted = [...sources].sort((a, b) => (b[sortBy] || 0) - (a[sortBy] || 0));
   const filtered = filterTopic === 'all' ? sorted : sorted.filter(s => s.topic === filterTopic);
+  const srcPag = usePagination(filtered, 50);
   const topics = [...new Set(sources.map(s => s.topic).filter(Boolean))];
   const domains = {};
   sources.forEach(s => {
@@ -2693,11 +2749,11 @@ function SourcesPage({ state }) {
           {filtered.length === 0 ? (
             <div className="empty-state">{'\u25C9'}<br/>No sources discovered yet. Import Peec data to populate sources.</div>
           ) : (
-            <table className="data-table"><thead><tr>
+            <><table className="data-table"><thead><tr>
               <th>#</th><th>URL</th><th>Citations</th><th>Rate</th><th>Visibility</th><th>Quality</th><th>Models</th>
-            </tr></thead><tbody>{filtered.slice(0, 50).map((s, i) => (
+            </tr></thead><tbody>{srcPag.paged.map((s, i) => (
               <tr key={i}>
-                <td style={{ color: 'var(--text-muted)' }}>{i + 1}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{srcPag.page * 50 + i + 1}</td>
                 <td style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.url}</td>
                 <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{s.citation_count || 0}</td>
                 <td>{s.citation_rate != null ? (s.citation_rate * 100).toFixed(1) + '%' : '—'}</td>
@@ -2706,6 +2762,7 @@ function SourcesPage({ state }) {
                 <td style={{ fontSize: 10 }}>{s.models_cited_in || '—'}</td>
               </tr>
             ))}</tbody></table>
+            <PaginationBar {...srcPag} label="sources" /></>
           )}
         </div>
 
@@ -2898,13 +2955,13 @@ function AnalysisPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(() => {});
+    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   useEffect(() => {
     if (!selectedCluster) return;
-    api('/api/analyze/' + selectedCluster.id, {}, token).then(r => setAnalyses(r.analyses || [])).catch(() => {});
-    api('/api/briefs/' + selectedCluster.id, {}, token).then(r => setBriefs(r.briefs || [])).catch(() => {});
+    api('/api/analyze/' + selectedCluster.id, {}, token).then(r => setAnalyses(r.analyses || [])).catch(err => console.warn('API:', err.message));
+    api('/api/briefs/' + selectedCluster.id, {}, token).then(r => setBriefs(r.briefs || [])).catch(err => console.warn('API:', err.message));
   }, [selectedCluster]);
 
   const runAnalysis = async () => {
@@ -3035,12 +3092,12 @@ function ContentStudioPage({ state }) {
   useEffect(() => {
     if (!wsId) return;
     const params = statusFilter !== 'all' ? `?status=${statusFilter}` : '';
-    api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(() => {});
+    api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
   }, [wsId, statusFilter]);
 
   useEffect(() => {
     if (!selectedDraft) return;
-    api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(() => {});
+    api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(err => console.warn('API:', err.message));
   }, [selectedDraft]);
 
   const handleReview = async (action) => {
@@ -3051,9 +3108,9 @@ function ContentStudioPage({ state }) {
       }, token);
       setReviewNote('');
       setReviewAction(null);
-      api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(() => {});
+      api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(err => console.warn('API:', err.message));
       const params = statusFilter !== 'all' ? `?status=${statusFilter}` : '';
-      api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(() => {});
+      api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
   };
 
@@ -3203,8 +3260,8 @@ function PublishingPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api(`/api/drafts/${wsId}?status=approved`, {}, token).then(r => setDrafts(r.drafts || [])).catch(() => {});
-    api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(() => {});
+    api(`/api/drafts/${wsId}?status=approved`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
+    api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const checkCms = async (cmsType) => {
@@ -3222,7 +3279,7 @@ function PublishingPage({ state }) {
         method: 'POST', body: JSON.stringify({ draft_id: selectedDraft, format: exportFormat, project_id: wsId })
       }, token);
       setExportResult(r);
-      api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(() => {});
+      api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
     setExporting(false);
   };
@@ -3336,7 +3393,7 @@ function PromptTemplatesPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(() => {});
+    api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleSave = async () => {
@@ -3346,7 +3403,7 @@ function PromptTemplatesPage({ state }) {
       }, token);
       setShowCreate(false);
       setForm({ name: '', type: 'source_analysis', template: '', model: 'claude-sonnet-4-5-20250514', temperature: 0.3, max_tokens: 4096 });
-      api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(() => {});
+      api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
   };
 
@@ -3452,12 +3509,12 @@ function MonitoringPage({ state }) {
   const [config, setConfig] = useState(null);
 
   useEffect(() => {
-    api('/api/health', {}, token).then(r => setHealth(r)).catch(() => {});
-    api('/api/config', {}, token).then(r => setConfig(r)).catch(() => {});
+    api('/api/health', {}, token).then(r => setHealth(r)).catch(err => console.warn('API:', err.message));
+    api('/api/config', {}, token).then(r => setConfig(r)).catch(err => console.warn('API:', err.message));
     if (!wsId) return;
-    api('/api/ops/jobs/' + wsId + '/stats', {}, token).then(r => setJobStats(r)).catch(() => {});
-    api('/api/usage/' + wsId, {}, token).then(r => setUsage(r)).catch(() => {});
-    api('/api/usage/' + wsId + '/history', {}, token).then(r => setUsageHistory(r.history || [])).catch(() => {});
+    api('/api/ops/jobs/' + wsId + '/stats', {}, token).then(r => setJobStats(r)).catch(err => console.warn('API:', err.message));
+    api('/api/usage/' + wsId, {}, token).then(r => setUsage(r)).catch(err => console.warn('API:', err.message));
+    api('/api/usage/' + wsId + '/history', {}, token).then(r => setUsageHistory(r.history || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   return (
@@ -3552,6 +3609,15 @@ function MonitoringPage({ state }) {
 
 function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
+
+  // Wire up global 401 handler — auto-logout on expired tokens
+  useEffect(() => {
+    setAuthErrorHandler(() => {
+      localStorage.removeItem('geo_token');
+      dispatch({ type: 'LOGOUT' });
+    });
+    return () => setAuthErrorHandler(null);
+  }, []);
 
   // Auto-login from stored token
   useEffect(() => {

@@ -467,7 +467,7 @@ async def ingest_records(records: List[PeecRecord], project_id: str = "default")
 
 
 async def _generate_sources(records: List[PeecRecord], project_id: str) -> int:
-    """Deduplicate URLs and create/update source records."""
+    """Deduplicate URLs and create/update source records. Uses batch queries."""
     url_map: Dict[str, Dict] = {}
 
     for r in records:
@@ -488,71 +488,67 @@ async def _generate_sources(records: List[PeecRecord], project_id: str) -> int:
         if not entry["title"] and r.title:
             entry["title"] = r.title
 
+    # Batch-fetch all existing sources for this project in one query
+    existing_sources = await fetch_all(
+        "SELECT id, url FROM sources WHERE project_id = ?", (project_id,)
+    )
+    existing_url_map = {s["url"]: s["id"] for s in existing_sources}
+
     for url, entry in url_map.items():
-        existing = await fetch_one(
-            "SELECT id FROM sources WHERE project_id = ? AND url = ?",
-            (project_id, url),
-        )
-        if existing:
+        if url in existing_url_map:
             await execute(
                 "UPDATE sources SET total_citation_count = ?, max_citation_rate = ?, "
                 "topics = ?, model_sources = ?, title = ? WHERE id = ?",
-                (
-                    entry["total_citation_count"],
-                    entry["max_citation_rate"],
-                    to_json(sorted(entry["topics"])),
-                    to_json(sorted(entry["model_sources"])),
-                    entry["title"],
-                    existing["id"],
-                ),
+                (entry["total_citation_count"], entry["max_citation_rate"],
+                 to_json(sorted(entry["topics"])), to_json(sorted(entry["model_sources"])),
+                 entry["title"], existing_url_map[url]),
             )
         else:
+            new_id = gen_id("src-")
             await execute(
                 "INSERT INTO sources (id, project_id, url, title, total_citation_count, "
                 "max_citation_rate, topics, model_sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    gen_id("src-"), project_id, url, entry["title"],
-                    entry["total_citation_count"], entry["max_citation_rate"],
-                    to_json(sorted(entry["topics"])), to_json(sorted(entry["model_sources"])),
-                ),
+                (new_id, project_id, url, entry["title"],
+                 entry["total_citation_count"], entry["max_citation_rate"],
+                 to_json(sorted(entry["topics"])), to_json(sorted(entry["model_sources"]))),
             )
+            existing_url_map[url] = new_id  # track for cluster linking
 
     return len(url_map)
 
 
 async def _generate_clusters(records: List[PeecRecord], project_id: str) -> int:
-    """Generate topic clusters from Peec records."""
+    """Generate topic clusters from Peec records. Uses batch queries."""
     topic_map: Dict[str, Dict] = {}
 
     for r in records:
         topic = r.topic or "Uncategorized"
         if topic not in topic_map:
-            topic_map[topic] = {
-                "name": topic,
-                "items": [],
-                "urls": set(),
-                "tags": set(),
-            }
+            topic_map[topic] = {"name": topic, "items": [], "urls": set(), "tags": set()}
         topic_map[topic]["items"].append(r)
         topic_map[topic]["urls"].add(r.url)
         for t in r.tags:
             topic_map[topic]["tags"].add(t)
 
+    # Batch-fetch all existing clusters and sources in two queries
+    existing_clusters = await fetch_all(
+        "SELECT id, name FROM clusters WHERE project_id = ?", (project_id,)
+    )
+    cluster_name_map = {c["name"]: c["id"] for c in existing_clusters}
+
+    existing_sources = await fetch_all(
+        "SELECT id, url FROM sources WHERE project_id = ?", (project_id,)
+    )
+    source_url_map = {s["url"]: s["id"] for s in existing_sources}
+
     count = 0
     for topic, data in topic_map.items():
-        cluster_id = gen_id("cl-")
         items = data["items"]
         avg_rate = sum(i.citation_rate for i in items) / len(items) if items else 0
         total_cit = sum(i.citation_count for i in items)
 
-        # Check if cluster already exists for this topic
-        existing = await fetch_one(
-            "SELECT id FROM clusters WHERE project_id = ? AND name = ?",
-            (project_id, topic),
-        )
-
-        if existing:
-            cluster_id = existing["id"]
+        if topic in cluster_name_map:
+            cluster_id = cluster_name_map[topic]
             await execute(
                 "UPDATE clusters SET prompt_count = ?, url_count = ?, "
                 "avg_citation_rate = ?, total_citations = ?, tags = ? WHERE id = ?",
@@ -560,35 +556,32 @@ async def _generate_clusters(records: List[PeecRecord], project_id: str) -> int:
                  to_json(sorted(data["tags"])), cluster_id),
             )
         else:
+            cluster_id = gen_id("cl-")
             await execute(
                 "INSERT INTO clusters (id, project_id, name, topics, tags, prompt_count, "
                 "url_count, avg_citation_rate, total_citations) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    cluster_id, project_id, topic,
-                    to_json([topic]), to_json(sorted(data["tags"])),
-                    len(items), len(data["urls"]), avg_rate, total_cit,
-                ),
+                (cluster_id, project_id, topic,
+                 to_json([topic]), to_json(sorted(data["tags"])),
+                 len(items), len(data["urls"]), avg_rate, total_cit),
             )
             count += 1
 
-        # Link records to cluster
-        for item in items:
-            await execute(
-                "INSERT OR IGNORE INTO cluster_records (cluster_id, peec_record_id) VALUES (?, ?)",
-                (cluster_id, item.id),
-            )
+        # Batch link records to cluster
+        await execute_many(
+            "INSERT OR IGNORE INTO cluster_records (cluster_id, peec_record_id) VALUES (?, ?)",
+            [(cluster_id, item.id) for item in items],
+        )
 
-        # Link sources to cluster
+        # Batch link sources to cluster
+        source_links = []
         for url in data["urls"]:
-            source = await fetch_one(
-                "SELECT id FROM sources WHERE project_id = ? AND url = ?",
-                (project_id, url),
+            if url in source_url_map:
+                source_links.append((cluster_id, source_url_map[url]))
+        if source_links:
+            await execute_many(
+                "INSERT OR IGNORE INTO cluster_sources (cluster_id, source_id) VALUES (?, ?)",
+                source_links,
             )
-            if source:
-                await execute(
-                    "INSERT OR IGNORE INTO cluster_sources (cluster_id, source_id) VALUES (?, ?)",
-                    (cluster_id, source["id"]),
-                )
 
     return count
 
