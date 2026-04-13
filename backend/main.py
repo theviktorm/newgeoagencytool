@@ -15,9 +15,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import (
@@ -164,12 +166,25 @@ app.include_router(workspace_router)
 app.include_router(ops_router)
 
 # ═══════════════════════════════════════════════════════════════
-# HEALTH & STATUS
+# STATIC FRONTEND — serve index.html and dashboard.jsx
 # ═══════════════════════════════════════════════════════════════
+
+# Resolve frontend dir: sibling of the backend/ package
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 @app.get("/")
 async def root():
+    index = _FRONTEND_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html")
     return {"status": "ok", "service": "Momentus AI API", "version": "1.0.0"}
+
+@app.get("/dashboard.jsx")
+async def serve_dashboard_jsx():
+    jsx = _FRONTEND_DIR / "dashboard.jsx"
+    if jsx.exists():
+        return FileResponse(jsx, media_type="application/javascript")
+    raise HTTPException(404, "dashboard.jsx not found")
 
 @app.get("/api/health")
 async def health():
@@ -914,6 +929,8 @@ def run():
         port=settings.port,
         reload=settings.debug,
         log_level="info",
+        loop="asyncio",
+        http="h11",
     )
 
 

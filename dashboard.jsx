@@ -7,7 +7,7 @@ const { useState, useEffect, useReducer, useCallback, useRef, useMemo, createCon
 
 const API = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   ? 'http://localhost:8100'
-  : 'https://newgeoagencytool-production.up.railway.app';
+  : window.location.origin;
 
 // ═══════════════════════════════════════════════════════════════
 // CONTEXT & AUTH STATE

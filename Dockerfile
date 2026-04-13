@@ -9,6 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code
 COPY backend/ ./backend/
 
+# Copy frontend files
+COPY index.html ./frontend/index.html
+COPY dashboard.jsx ./frontend/dashboard.jsx
+
 # Railway injects PORT env var at runtime
 EXPOSE 8100
 
