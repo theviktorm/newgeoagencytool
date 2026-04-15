@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pathlib import Path
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -232,11 +232,18 @@ async def peec_connect(req: PeecConnectRequest):
 @app.post("/api/peec/import/csv")
 async def peec_import_csv(
     file: UploadFile = File(...),
-    project_id: str = "default",
+    project_id: str = Form("default"),
 ):
-    """Import Peec data from CSV upload."""
-    if not file.filename or not file.filename.endswith(".csv"):
-        raise HTTPException(400, "File must be a .csv")
+    """Import Peec data from CSV upload.
+
+    Accepts `project_id` from multipart form data (preferred) so the frontend
+    can send both the file and the workspace/project context in the same
+    request body. Falls back to "default" when omitted.
+    """
+    if not file.filename or not (
+        file.filename.endswith(".csv") or file.filename.endswith(".tsv")
+    ):
+        raise HTTPException(400, "File must be a .csv or .tsv")
 
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:  # 50MB limit

@@ -2505,12 +2505,19 @@ function DataImportPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.records || [])).catch(err => console.warn('API:', err.message));
-    api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r)).catch(err => console.warn('API:', err.message));
+    api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
+    api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r.data || r)).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleCsvImport = async () => {
-    if (!csvText.trim()) return;
+    if (!csvText.trim()) {
+      setImportResult({ success: false, msg: 'CSV is empty — paste or drop a file first.' });
+      return;
+    }
+    if (!wsId) {
+      setImportResult({ success: false, msg: 'No active workspace. Create or select a workspace first.' });
+      return;
+    }
     setImporting(true);
     setImportResult(null);
     try {
@@ -2527,8 +2534,21 @@ function DataImportPage({ state }) {
         setImportResult({ success: false, msg: r.error || 'Import failed', warnings });
       } else {
         const d = r.data || r;
-        setImportResult({ success: true, count: d.records || d.imported || 0, msg: `Imported ${d.records || 0} records, ${d.sources || 0} sources, ${d.clusters || 0} clusters` });
-        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
+        const imported = d.records || d.imported || 0;
+        setImportResult({
+          success: true,
+          count: imported,
+          msg: `Imported ${imported} records, ${d.sources || 0} sources, ${d.clusters || 0} clusters`,
+        });
+        // Refresh records list
+        try {
+          const fresh = await api('/api/peec/records/' + wsId, {}, token);
+          setRecords(fresh.data || fresh.records || []);
+        } catch (err) { console.warn('API:', err.message); }
+        // Clear the text area so user can upload another file
+        setCsvText('');
+        // Auto-switch to Records tab so user sees what landed
+        if (imported > 0) setTab('records');
       }
     } catch (e) {
       const msg = typeof e.message === 'string' ? e.message : JSON.stringify(e.message);
@@ -2641,15 +2661,16 @@ function DataImportPage({ state }) {
             <div className="empty-state">{'\u21E9'}<br/>No records imported yet. Upload a CSV or sync from the Peec API.</div>
           ) : (
             <><table className="data-table"><thead><tr>
-              <th>Prompt</th><th>URL</th><th>Model</th><th>Citations</th><th>Rate</th><th>Topic</th><th>Imported</th>
+              <th>Title</th><th>URL</th><th>Model</th><th>Citations</th><th>Rate</th><th>Usage</th><th>Topic</th><th>Imported</th>
             </tr></thead><tbody>{recPag.paged.map((r, i) => (
               <tr key={i}>
-                <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.prompt || r.query || '—'}</td>
-                <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.url || '—'}</td>
-                <td><span className="badge">{r.model || r.platform || '—'}</span></td>
-                <td>{r.citation_count ?? '—'}</td>
+                <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.title || r.prompt || r.query || '—'}</td>
+                <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-mono)', fontSize: 10 }}>{r.url || '—'}</td>
+                <td><span className="badge">{r.model_source || r.model || r.platform || '—'}</span></td>
+                <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{r.citation_count ?? '—'}</td>
                 <td>{r.citation_rate != null ? (r.citation_rate * 100).toFixed(1) + '%' : '—'}</td>
-                <td>{r.topic || r.tag || '—'}</td>
+                <td>{r.usage_count ?? '—'}</td>
+                <td>{r.topic || (Array.isArray(r.tags) ? r.tags[0] : r.tag) || '—'}</td>
                 <td style={{ fontSize: 10, color: 'var(--text-muted)' }}>{r.imported_at ? new Date(r.imported_at).toLocaleDateString() : '—'}</td>
               </tr>
             ))}</tbody></table>
@@ -2706,17 +2727,25 @@ function SourcesPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/sources/' + wsId, {}, token).then(r => setSources(r.sources || [])).catch(err => console.warn('API:', err.message));
-    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(err => console.warn('API:', err.message));
+    api('/api/sources/' + wsId, {}, token).then(r => setSources(r.data || r.sources || [])).catch(err => console.warn('API:', err.message));
+    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.data || r.clusters || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
-  const sorted = [...sources].sort((a, b) => (b[sortBy] || 0) - (a[sortBy] || 0));
-  const filtered = filterTopic === 'all' ? sorted : sorted.filter(s => s.topic === filterTopic);
+  // Backend column is total_citation_count on sources; fall back to citation_count for
+  // measurement-table rows that use the legacy name.
+  const sortKey = sortBy === 'citation_count' ? 'total_citation_count' : sortBy;
+  const getCite = (s) => s.total_citation_count ?? s.citation_count ?? 0;
+  const sorted = [...sources].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0));
+  const filtered = filterTopic === 'all' ? sorted : sorted.filter(s => s.topic === filterTopic || (Array.isArray(s.topics) && s.topics.includes(filterTopic)));
   const srcPag = usePagination(filtered, 50);
-  const topics = [...new Set(sources.map(s => s.topic).filter(Boolean))];
+  const topics = [...new Set(sources.flatMap(s => {
+    if (Array.isArray(s.topics)) return s.topics;
+    if (typeof s.topics === 'string' && s.topics.startsWith('[')) { try { return JSON.parse(s.topics); } catch { return []; } }
+    return s.topic ? [s.topic] : [];
+  }).filter(Boolean))];
   const domains = {};
   sources.forEach(s => {
-    try { const d = new URL(s.url).hostname; domains[d] = (domains[d] || 0) + (s.citation_count || 0); } catch {}
+    try { const d = new URL(s.url).hostname; domains[d] = (domains[d] || 0) + getCite(s); } catch {}
   });
   const topDomains = Object.entries(domains).sort((a, b) => b[1] - a[1]).slice(0, 10);
 
@@ -2726,7 +2755,7 @@ function SourcesPage({ state }) {
         <div className="metric-card"><div className="metric-label">TOTAL SOURCES</div><div className="metric-value">{sources.length}</div></div>
         <div className="metric-card"><div className="metric-label">UNIQUE DOMAINS</div><div className="metric-value">{Object.keys(domains).length}</div></div>
         <div className="metric-card"><div className="metric-label">TOPIC CLUSTERS</div><div className="metric-value">{clusters.length}</div></div>
-        <div className="metric-card"><div className="metric-label">TOTAL CITATIONS</div><div className="metric-value">{sources.reduce((s, r) => s + (r.citation_count || 0), 0)}</div></div>
+        <div className="metric-card"><div className="metric-label">TOTAL CITATIONS</div><div className="metric-value">{sources.reduce((sum, r) => sum + (r.total_citation_count ?? r.citation_count ?? 0), 0)}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16 }}>
@@ -2755,11 +2784,16 @@ function SourcesPage({ state }) {
               <tr key={i}>
                 <td style={{ color: 'var(--text-muted)' }}>{srcPag.page * 50 + i + 1}</td>
                 <td style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.url}</td>
-                <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{s.citation_count || 0}</td>
-                <td>{s.citation_rate != null ? (s.citation_rate * 100).toFixed(1) + '%' : '—'}</td>
-                <td>{s.visibility != null ? s.visibility.toFixed(2) : '—'}</td>
-                <td>{s.quality_score != null ? s.quality_score.toFixed(1) : '—'}</td>
-                <td style={{ fontSize: 10 }}>{s.models_cited_in || '—'}</td>
+                <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{getCite(s)}</td>
+                <td>{(s.max_citation_rate ?? s.citation_rate) != null ? ((s.max_citation_rate ?? s.citation_rate) * 100).toFixed(1) + '%' : '—'}</td>
+                <td>{s.visibility != null ? Number(s.visibility).toFixed(2) : '—'}</td>
+                <td>{s.quality_score != null ? Number(s.quality_score).toFixed(1) : '—'}</td>
+                <td style={{ fontSize: 10 }}>{(() => {
+                  const ms = s.model_sources;
+                  if (Array.isArray(ms)) return ms.join(', ');
+                  if (typeof ms === 'string' && ms.startsWith('[')) { try { return JSON.parse(ms).join(', '); } catch { return ms; } }
+                  return s.models_cited_in || ms || '—';
+                })()}</td>
               </tr>
             ))}</tbody></table>
             <PaginationBar {...srcPag} label="sources" /></>
@@ -2784,7 +2818,7 @@ function SourcesPage({ state }) {
               clusters.slice(0, 10).map((c, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                   <span style={{ fontSize: 12 }}>{c.label || c.name || `Cluster ${c.id}`}</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.record_count || 0} records</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.url_count ?? c.record_count ?? 0} URLs</span>
                 </div>
               ))
             }
@@ -2817,12 +2851,13 @@ function ScraperPage({ state }) {
         const r = await api('/api/batch/scrape', {
           method: 'POST', body: JSON.stringify({ project_id: wsId, urls: urlList })
         }, token);
-        setBatchStatus(r);
+        setBatchStatus(r.data || r);
       } else {
         const r = await api('/api/sources/scrape', {
           method: 'POST', body: JSON.stringify({ project_id: wsId, urls: urlList })
         }, token);
-        setResults(r.results || []);
+        const d = r.data || r;
+        setResults(d.results || (Array.isArray(d) ? d : []));
       }
     } catch (e) { setResults([{ url: 'Error', error: e.message }]); }
     setScraping(false);
@@ -2955,13 +2990,13 @@ function AnalysisPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.clusters || [])).catch(err => console.warn('API:', err.message));
+    api('/api/clusters/' + wsId, {}, token).then(r => setClusters(r.data || r.clusters || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   useEffect(() => {
     if (!selectedCluster) return;
-    api('/api/analyze/' + selectedCluster.id, {}, token).then(r => setAnalyses(r.analyses || [])).catch(err => console.warn('API:', err.message));
-    api('/api/briefs/' + selectedCluster.id, {}, token).then(r => setBriefs(r.briefs || [])).catch(err => console.warn('API:', err.message));
+    api('/api/analyze/' + selectedCluster.id, {}, token).then(r => setAnalyses(r.data || r.analyses || [])).catch(err => console.warn('API:', err.message));
+    api('/api/briefs/' + selectedCluster.id, {}, token).then(r => setBriefs(r.data || r.briefs || [])).catch(err => console.warn('API:', err.message));
   }, [selectedCluster]);
 
   const runAnalysis = async () => {
@@ -2971,7 +3006,7 @@ function AnalysisPage({ state }) {
       const r = await api('/api/analyze', {
         method: 'POST', body: JSON.stringify({ cluster_id: selectedCluster.id, project_id: wsId })
       }, token);
-      setAnalyses(prev => [r, ...prev]);
+      setAnalyses(prev => [r.data || r, ...prev]);
     } catch (e) { alert(e.message); }
     setRunning(false);
   };
@@ -2982,7 +3017,7 @@ function AnalysisPage({ state }) {
       const r = await api('/api/analyze/brief', {
         method: 'POST', body: JSON.stringify({ analysis_id: analysisId })
       }, token);
-      setBriefs(prev => [r, ...prev]);
+      setBriefs(prev => [r.data || r, ...prev]);
     } catch (e) { alert(e.message); }
     setGenBrief(false);
   };
@@ -3005,7 +3040,9 @@ function AnalysisPage({ state }) {
             <div key={c.id} className={`sidebar-item ${selectedCluster?.id === c.id ? 'active' : ''}`}
               onClick={() => setSelectedCluster(c)} style={{ cursor: 'pointer', padding: '8px 12px' }}>
               <div style={{ fontSize: 12 }}>{c.label || c.name || `Cluster ${c.id}`}</div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.record_count || 0} records · {c.intent || 'mixed'}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                {c.url_count ?? c.record_count ?? 0} URLs · {c.prompt_count ?? 0} prompts · {c.total_citations ?? 0} citations
+              </div>
             </div>
           ))}
         </div>
@@ -3023,9 +3060,9 @@ function AnalysisPage({ state }) {
                   </button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>Intent:</span> {selectedCluster.intent || '—'}</div>
-                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>Records:</span> {selectedCluster.record_count || 0}</div>
-                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>Sources:</span> {selectedCluster.source_count || 0}</div>
+                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>URLs:</span> {selectedCluster.url_count ?? 0}</div>
+                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>Prompts:</span> {selectedCluster.prompt_count ?? 0}</div>
+                  <div style={{ fontSize: 11 }}><span style={{ color: 'var(--text-muted)' }}>Citations:</span> {selectedCluster.total_citations ?? 0}</div>
                 </div>
               </div>
 
@@ -3092,12 +3129,12 @@ function ContentStudioPage({ state }) {
   useEffect(() => {
     if (!wsId) return;
     const params = statusFilter !== 'all' ? `?status=${statusFilter}` : '';
-    api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
+    api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.data || r.drafts || [])).catch(err => console.warn('API:', err.message));
   }, [wsId, statusFilter]);
 
   useEffect(() => {
     if (!selectedDraft) return;
-    api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(err => console.warn('API:', err.message));
+    api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r.data || r)).catch(err => console.warn('API:', err.message));
   }, [selectedDraft]);
 
   const handleReview = async (action) => {
@@ -3108,9 +3145,9 @@ function ContentStudioPage({ state }) {
       }, token);
       setReviewNote('');
       setReviewAction(null);
-      api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r)).catch(err => console.warn('API:', err.message));
+      api('/api/drafts/detail/' + selectedDraft, {}, token).then(r => setDraftDetail(r.data || r)).catch(err => console.warn('API:', err.message));
       const params = statusFilter !== 'all' ? `?status=${statusFilter}` : '';
-      api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
+      api(`/api/drafts/${wsId}${params}`, {}, token).then(r => setDrafts(r.data || r.drafts || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
   };
 
@@ -3260,14 +3297,15 @@ function PublishingPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api(`/api/drafts/${wsId}?status=approved`, {}, token).then(r => setDrafts(r.drafts || [])).catch(err => console.warn('API:', err.message));
-    api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(err => console.warn('API:', err.message));
+    api(`/api/drafts/${wsId}?status=approved`, {}, token).then(r => setDrafts(r.data || r.drafts || [])).catch(err => console.warn('API:', err.message));
+    api('/api/exports/' + wsId, {}, token).then(r => setExports(r.data || r.exports || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const checkCms = async (cmsType) => {
     try {
       const r = await api('/api/publish/check/' + cmsType, { method: 'POST' }, token);
-      setCmsStatus(prev => ({ ...prev, [cmsType]: r.connected ? 'connected' : 'failed' }));
+      const d = r.data || r;
+      setCmsStatus(prev => ({ ...prev, [cmsType]: d.connected ? 'connected' : 'failed' }));
     } catch { setCmsStatus(prev => ({ ...prev, [cmsType]: 'failed' })); }
   };
 
@@ -3278,8 +3316,8 @@ function PublishingPage({ state }) {
       const r = await api('/api/export', {
         method: 'POST', body: JSON.stringify({ draft_id: selectedDraft, format: exportFormat, project_id: wsId })
       }, token);
-      setExportResult(r);
-      api('/api/exports/' + wsId, {}, token).then(r => setExports(r.exports || [])).catch(err => console.warn('API:', err.message));
+      setExportResult(r.data || r);
+      api('/api/exports/' + wsId, {}, token).then(r => setExports(r.data || r.exports || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
     setExporting(false);
   };
@@ -3291,7 +3329,8 @@ function PublishingPage({ state }) {
       const r = await api('/api/publish', {
         method: 'POST', body: JSON.stringify({ draft_id: selectedDraft, cms, project_id: wsId })
       }, token);
-      alert('Published successfully! URL: ' + (r.url || r.published_url || 'N/A'));
+      const d = r.data || r;
+      alert('Published successfully! URL: ' + (d.url || d.published_url || 'N/A'));
     } catch (e) { alert(e.message); }
     setPublishing(false);
   };
@@ -3393,7 +3432,7 @@ function PromptTemplatesPage({ state }) {
 
   useEffect(() => {
     if (!wsId) return;
-    api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(err => console.warn('API:', err.message));
+    api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.data || r.templates || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   const handleSave = async () => {
@@ -3403,7 +3442,7 @@ function PromptTemplatesPage({ state }) {
       }, token);
       setShowCreate(false);
       setForm({ name: '', type: 'source_analysis', template: '', model: 'claude-sonnet-4-5-20250514', temperature: 0.3, max_tokens: 4096 });
-      api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.templates || [])).catch(err => console.warn('API:', err.message));
+      api('/api/prompts/' + wsId, {}, token).then(r => setTemplates(r.data || r.templates || [])).catch(err => console.warn('API:', err.message));
     } catch (e) { alert(e.message); }
   };
 
@@ -3510,11 +3549,11 @@ function MonitoringPage({ state }) {
 
   useEffect(() => {
     api('/api/health', {}, token).then(r => setHealth(r)).catch(err => console.warn('API:', err.message));
-    api('/api/config', {}, token).then(r => setConfig(r)).catch(err => console.warn('API:', err.message));
+    api('/api/config', {}, token).then(r => setConfig(r.data || r)).catch(err => console.warn('API:', err.message));
     if (!wsId) return;
-    api('/api/ops/jobs/' + wsId + '/stats', {}, token).then(r => setJobStats(r)).catch(err => console.warn('API:', err.message));
-    api('/api/usage/' + wsId, {}, token).then(r => setUsage(r)).catch(err => console.warn('API:', err.message));
-    api('/api/usage/' + wsId + '/history', {}, token).then(r => setUsageHistory(r.history || [])).catch(err => console.warn('API:', err.message));
+    api('/api/ops/jobs/' + wsId + '/stats', {}, token).then(r => setJobStats(r.data || r)).catch(err => console.warn('API:', err.message));
+    api('/api/usage/' + wsId, {}, token).then(r => setUsage(r.data || r)).catch(err => console.warn('API:', err.message));
+    api('/api/usage/' + wsId + '/history', {}, token).then(r => setUsageHistory(r.data || r.history || [])).catch(err => console.warn('API:', err.message));
   }, [wsId]);
 
   return (

@@ -359,3 +359,8 @@ async def init_auth():
         admin = await fetch_one("SELECT id FROM users WHERE role = 'superadmin' LIMIT 1")
         if admin:
             await add_workspace_member(ws["id"], admin["id"], "admin")
+        # Mirror as a project so dashboard/overview and ingestion align on id
+        await execute(
+            "INSERT OR IGNORE INTO projects (id, name, config) VALUES (?, ?, ?)",
+            (ws["id"], ws["name"], json.dumps({"workspace_id": ws["id"]})),
+        )
