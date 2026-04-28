@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
@@ -38,6 +38,7 @@ from .peec_connector import (
     get_project_records, get_project_sources, ingest_from_api,
     ingest_records, measure_performance, parse_csv_content,
 )
+from . import peec_oauth
 from .peec_mcp_client import (
     PeecMCPClient, sync_workspace_from_mcp, get_sync_state,
     start_auto_sync, stop_auto_sync, MCP_AVAILABLE,
@@ -315,11 +316,83 @@ async def get_records(project_id: str):
 # ─── Peec MCP (Tier 1: live ingestion) ─────────────────────────
 
 @app.get("/api/peec/mcp/status")
-async def peec_mcp_status():
-    """Test the Peec MCP connection and report discovered tools."""
-    client = PeecMCPClient()
+async def peec_mcp_status(ws_id: str = ""):
+    """Test the Peec MCP connection. If ws_id is provided, evaluates the
+    per-workspace OAuth state too; otherwise reports global config only."""
+    base = {
+        "url": settings.peec_mcp_url,
+        "configured": bool(settings.peec_mcp_url),
+        "mcp_package_installed": MCP_AVAILABLE,
+        "auto_sync_minutes": settings.peec_mcp_auto_sync_minutes,
+        "public_base_url": settings.public_base_url,
+    }
+    if not ws_id:
+        return ApiResponse(data=base).dict()
+    client = PeecMCPClient(workspace_id=ws_id)
     status = await client.test_connection()
-    return ApiResponse(data=status).dict()
+    oauth_status = await peec_oauth.get_status(ws_id, settings.peec_mcp_url)
+    return ApiResponse(data={**base, **status, "oauth": oauth_status}).dict()
+
+
+@app.post("/api/peec/mcp/auth/start/{ws_id}")
+async def peec_mcp_auth_start(ws_id: str):
+    """Begin OAuth flow for this workspace. Returns the authorize URL the
+    browser should open. The user logs into Peec, Peec redirects back to
+    /api/peec/mcp/auth/callback, tokens are persisted, popup closes itself."""
+    redirect_uri = peec_oauth.public_redirect_uri(settings.public_base_url)
+    try:
+        flow = await peec_oauth.start_authorization(
+            workspace_id=ws_id,
+            server_url=settings.peec_mcp_url,
+            redirect_uri=redirect_uri,
+        )
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e)).dict()
+    return ApiResponse(data={
+        "authorize_url": flow["authorize_url"],
+        "state": flow["state"],
+        "redirect_uri": redirect_uri,
+    }).dict()
+
+
+@app.get("/api/peec/mcp/auth/callback")
+async def peec_mcp_auth_callback(
+    code: str = "", state: str = "", error: str = "", error_description: str = "",
+):
+    """OAuth redirect target. Exchanges code → tokens, persists, then
+    returns a tiny HTML page that messages the opener and closes itself."""
+    if error or not code or not state:
+        msg = error_description or error or "Missing code/state"
+        return HTMLResponse(_oauth_callback_html(False, msg), status_code=400)
+    try:
+        await peec_oauth.handle_callback(state=state, code=code)
+        return HTMLResponse(_oauth_callback_html(True, "Connected to Peec."))
+    except Exception as e:
+        return HTMLResponse(_oauth_callback_html(False, str(e)), status_code=400)
+
+
+@app.post("/api/peec/mcp/auth/disconnect/{ws_id}")
+async def peec_mcp_auth_disconnect(ws_id: str):
+    await peec_oauth.disconnect(ws_id, settings.peec_mcp_url)
+    return ApiResponse(data={"ok": True}).dict()
+
+
+def _oauth_callback_html(ok: bool, msg: str) -> str:
+    color = "#10b981" if ok else "#ef4444"
+    title = "Peec connected" if ok else "Peec connection failed"
+    safe_msg = (msg or "").replace("<", "&lt;").replace(">", "&gt;")
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{title}</title><style>body{{font-family:-apple-system,sans-serif;background:#0b0d11;color:#e6e6e6;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
+.box{{max-width:420px;padding:32px;background:#13161c;border:1px solid #2a2f38;border-radius:10px;text-align:center}}
+.dot{{width:42px;height:42px;border-radius:50%;background:{color};margin:0 auto 16px}}
+h1{{font-size:18px;margin:0 0 8px}}p{{color:#9aa1ac;font-size:13px;margin:0}}
+button{{margin-top:18px;padding:8px 16px;background:#1f2530;color:#e6e6e6;border:1px solid #2a2f38;border-radius:6px;cursor:pointer}}
+</style></head><body><div class="box"><div class="dot"></div>
+<h1>{title}</h1><p>{safe_msg}</p>
+<button onclick="window.close()">Close</button></div>
+<script>try{{window.opener&&window.opener.postMessage({{type:'peec-oauth',ok:{str(ok).lower()},msg:{safe_msg!r}}},'*');setTimeout(()=>window.close(),1500);}}catch(e){{}}</script>
+</body></html>"""
 
 
 @app.post("/api/peec/mcp/sync/{ws_id}")

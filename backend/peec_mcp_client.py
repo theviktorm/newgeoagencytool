@@ -20,9 +20,11 @@ Design notes
      - `mention_events`       (immutable observation log, used by insights)
      - `competitor_history`   (snapshot of competitor SoV)
 
-3. Auth: bearer token in `Authorization` header. Peec's blog implies an
-   OAuth flow at setup time — a long-lived token is the realistic
-   server-side equivalent. Configure via `GEO_PEEC_MCP_TOKEN`.
+3. Auth: per-workspace OAuth 2.1 (RFC 7591 DCR + PKCE). The user kicks
+   off `/api/peec/mcp/auth/start/{ws_id}`, logs into Peec in a popup,
+   gets redirected back to `/api/peec/mcp/auth/callback`. Tokens land
+   in `peec_oauth_clients` and refresh automatically. A static
+   GEO_PEEC_MCP_TOKEN bearer is still honored as a legacy fallback.
 
 4. If the MCP package isn't installed, every public function returns a
    structured error rather than crashing the import. This keeps the rest
@@ -43,6 +45,7 @@ from .database import (
     execute, execute_many, fetch_all, fetch_one, gen_id, to_json, from_json,
 )
 from .models import normalize_model_source
+from . import peec_oauth
 
 logger = logging.getLogger("geo.peec_mcp")
 
@@ -216,14 +219,32 @@ class PeecMCPClient:
         token: Optional[str] = None,
         timeout: Optional[int] = None,
         tool_overrides: Optional[Dict[str, str]] = None,
+        workspace_id: Optional[str] = None,
     ):
         self.url = url or settings.peec_mcp_url
-        self.token = token or settings.peec_mcp_token
+        # Static fallback (legacy). Per-workspace OAuth token resolved in session().
+        self.static_token = token or settings.peec_mcp_token
         self.timeout = timeout or settings.peec_mcp_timeout
         self.tool_overrides = tool_overrides or {}
+        self.workspace_id = workspace_id
         # Discovered map: capability -> tool name
         self.tool_map: Dict[str, str] = {}
         self.tools_raw: List[Dict[str, str]] = []
+        # Resolved at session() time, used by callers that want to know how
+        # the connection was authenticated.
+        self.token: Optional[str] = None
+        self.auth_mode: str = ""  # "oauth" | "static" | ""
+
+    async def _resolve_token(self) -> Tuple[str, str]:
+        """Pick the best available bearer for this client. Tries per-workspace
+        OAuth first (auto-refreshes), then the static env fallback."""
+        if self.workspace_id:
+            tok = await peec_oauth.get_valid_token(self.workspace_id, self.url)
+            if tok:
+                return tok, "oauth"
+        if self.static_token:
+            return self.static_token, "static"
+        return "", ""
 
     # ── connection ──────────────────────────────────────────────
 
@@ -234,12 +255,16 @@ class PeecMCPClient:
             raise RuntimeError(
                 "mcp package not installed. Run: pip install 'mcp>=1.2.0'"
             )
-        if not self.token:
+        token, mode = await self._resolve_token()
+        if not token:
             raise RuntimeError(
-                "GEO_PEEC_MCP_TOKEN not configured. Get a bearer token from your "
-                "Peec account and set it in .env."
+                "Peec MCP not connected for this workspace. Click "
+                "'Connect Peec' on the Data Import → Peec MCP tab to "
+                "authorize, or set GEO_PEEC_MCP_TOKEN as a static fallback."
             )
-        headers = {"Authorization": f"Bearer {self.token}"}
+        self.token = token
+        self.auth_mode = mode
+        headers = {"Authorization": f"Bearer {token}"}
         async with streamablehttp_client(self.url, headers=headers) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -287,10 +312,11 @@ class PeecMCPClient:
                 "error": "mcp package not installed",
                 "tools": [], "tool_map": {},
             }
-        if not self.token:
+        token, _mode = await self._resolve_token()
+        if not token:
             return {
                 "connected": False, "configured": False,
-                "error": "GEO_PEEC_MCP_TOKEN not set",
+                "error": "Peec MCP not connected for this workspace",
                 "tools": [], "tool_map": {},
             }
         try:
@@ -300,6 +326,7 @@ class PeecMCPClient:
                     "connected": True,
                     "configured": True,
                     "url": self.url,
+                    "auth_mode": self.auth_mode,
                     "tools": self.tools_raw,
                     "tool_map": self.tool_map,
                 }
@@ -363,7 +390,9 @@ async def sync_workspace_from_mcp(
     Returns a summary dict suitable for the API and the UI.
     """
     if client is None:
-        client = PeecMCPClient()
+        client = PeecMCPClient(workspace_id=workspace_id)
+    elif client.workspace_id is None:
+        client.workspace_id = workspace_id
 
     project_id = workspace_id
     batch_id = gen_id("mcp-")
@@ -383,8 +412,9 @@ async def sync_workspace_from_mcp(
         summary["error"] = "mcp package not installed"
         await _record_sync(workspace_id, "error", summary["error"], batch_id, 0, 0)
         return summary
-    if not client.token:
-        summary["error"] = "Peec MCP token not configured"
+    token, _mode = await client._resolve_token()
+    if not token:
+        summary["error"] = "Peec MCP not connected for this workspace — click Connect Peec"
         await _record_sync(workspace_id, "error", summary["error"], batch_id, 0, 0)
         return summary
 

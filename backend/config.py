@@ -40,9 +40,12 @@ class Settings(BaseSettings):
 
     # ── Peec MCP (preferred — live, sentiment, competitors) ──
     peec_mcp_url: str = "https://api.peec.ai/mcp"
-    peec_mcp_token: str = ""              # bearer token from Peec account
+    peec_mcp_token: str = ""              # legacy fallback bearer (Peec now uses OAuth)
     peec_mcp_timeout: int = 30
     peec_mcp_auto_sync_minutes: int = 0   # 0 = manual only, >0 = background poll cadence
+    # Public-facing base URL of *this* backend, used to build the OAuth
+    # redirect URI registered with Peec. Override via GEO_PUBLIC_BASE_URL.
+    public_base_url: str = "http://localhost:8000"
 
     # ── Anthropic / Claude ──
     anthropic_api_key: str = ""
@@ -94,7 +97,9 @@ class Settings(BaseSettings):
 
     @property
     def has_peec_mcp(self) -> bool:
-        return bool(self.peec_mcp_token and self.peec_mcp_url)
+        # Either OAuth-per-workspace (preferred — checked at runtime) or
+        # the legacy static token fallback gives us a usable MCP setup.
+        return bool(self.peec_mcp_url)
 
     @property
     def has_claude_api(self) -> bool:

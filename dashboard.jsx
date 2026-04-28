@@ -2540,9 +2540,56 @@ function DataImportPage({ state }) {
     if (!wsId) return;
     api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
     api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r.data || r)).catch(err => console.warn('API:', err.message));
-    api('/api/peec/mcp/status', {}, token).then(r => setMcpStatus(r.data || r)).catch(() => {});
+    refreshMcpStatus();
     api('/api/peec/mcp/sync/' + wsId + '/state', {}, token).then(r => setMcpState(r.data || r)).catch(() => {});
   }, [wsId]);
+
+  const refreshMcpStatus = () => {
+    if (!wsId) return;
+    api('/api/peec/mcp/status?ws_id=' + wsId, {}, token).then(r => setMcpStatus(r.data || r)).catch(() => {});
+  };
+
+  const handleConnectPeec = async () => {
+    if (!wsId) return;
+    setImportResult(null);
+    try {
+      const r = await api('/api/peec/mcp/auth/start/' + wsId, { method: 'POST' }, token);
+      const url = (r.data || r).authorize_url;
+      if (!url) {
+        setImportResult({ success: false, msg: r.error || 'Could not start OAuth flow' });
+        return;
+      }
+      const w = window.open(url, 'peec-oauth', 'width=600,height=720');
+      const onMessage = (ev) => {
+        if (!ev.data || ev.data.type !== 'peec-oauth') return;
+        window.removeEventListener('message', onMessage);
+        if (ev.data.ok) {
+          setImportResult({ success: true, msg: 'Peec connected. Token will auto-refresh.' });
+          refreshMcpStatus();
+        } else {
+          setImportResult({ success: false, msg: 'Peec auth failed: ' + (ev.data.msg || 'unknown error') });
+        }
+      };
+      window.addEventListener('message', onMessage);
+      // Poll fallback in case the popup blocks postMessage
+      const pollT = setInterval(() => {
+        if (w && w.closed) { clearInterval(pollT); refreshMcpStatus(); }
+      }, 1000);
+    } catch (e) {
+      setImportResult({ success: false, msg: typeof e.message === 'string' ? e.message : 'OAuth start failed' });
+    }
+  };
+
+  const handleDisconnectPeec = async () => {
+    if (!wsId) return;
+    try {
+      await api('/api/peec/mcp/auth/disconnect/' + wsId, { method: 'POST' }, token);
+      refreshMcpStatus();
+      setImportResult({ success: true, msg: 'Peec disconnected. Click Connect to re-authorize.' });
+    } catch (e) {
+      setImportResult({ success: false, msg: 'Disconnect failed' });
+    }
+  };
 
   const handleMcpSync = async () => {
     if (!wsId) {
@@ -2697,16 +2744,25 @@ function DataImportPage({ state }) {
           <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 16 }}>
             Pulls fresh mentions, sources, competitors, and sentiment directly from Peec's Model Context Protocol endpoint —
             no CSV exports, no rate-limited REST loops. Each sync also runs the Insights engine to surface
-            sentiment drops, competitor moves, and untapped clusters.
+            sentiment drops, competitor moves, and untapped clusters. Authentication is per-workspace via OAuth — login once, refresh forever.
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
             <div className="card" style={{ padding: 12 }}>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Endpoint</div>
-              <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
                 {mcpStatus?.url || '—'}
               </div>
-              <div style={{ fontSize: 11, color: mcpStatus?.configured ? 'var(--emerald)' : 'var(--rose)' }}>
-                {mcpStatus?.configured ? 'configured' : 'set GEO_PEEC_MCP_TOKEN in .env'}
+              <div style={{ fontSize: 11, color: mcpStatus?.mcp_package_installed ? 'var(--emerald)' : 'var(--rose)' }}>
+                {mcpStatus?.mcp_package_installed ? 'mcp package ready' : 'pip install mcp>=1.2.0'}
+              </div>
+            </div>
+            <div className="card" style={{ padding: 12 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>OAuth status</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4, color: mcpStatus?.oauth?.connected ? 'var(--emerald)' : 'var(--amber)' }}>
+                {mcpStatus?.oauth?.connected ? 'Connected' : (mcpStatus?.oauth?.registered ? 'Registered, not authorized' : 'Not connected')}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {mcpStatus?.oauth?.expires_at ? `token exp: ${new Date(mcpStatus.oauth.expires_at).toLocaleTimeString()}` : '—'}
               </div>
             </div>
             <div className="card" style={{ padding: 12 }}>
@@ -2715,7 +2771,7 @@ function DataImportPage({ state }) {
                 {mcpStatus?.auto_sync_minutes ? `every ${mcpStatus.auto_sync_minutes}m` : 'manual only'}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {mcpStatus?.mcp_package_installed ? 'mcp package: installed' : 'mcp package: missing'}
+                redirect: <span style={{ fontFamily: 'var(--font-mono)' }}>{mcpStatus?.public_base_url || '—'}/api/peec/mcp/auth/callback</span>
               </div>
             </div>
             <div className="card" style={{ padding: 12 }}>
@@ -2728,13 +2784,21 @@ function DataImportPage({ state }) {
               </div>
             </div>
           </div>
-          <button
-            className="btn btn-primary"
-            onClick={handleMcpSync}
-            disabled={mcpSyncing || !mcpStatus?.configured || !mcpStatus?.mcp_package_installed}
-          >
-            {mcpSyncing ? 'Syncing via MCP...' : 'Sync via Peec MCP'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {mcpStatus?.oauth?.connected ? (
+              <>
+                <button className="btn btn-primary" onClick={handleMcpSync} disabled={mcpSyncing || !mcpStatus?.mcp_package_installed}>
+                  {mcpSyncing ? 'Syncing via MCP...' : 'Sync via Peec MCP'}
+                </button>
+                <button className="btn" onClick={handleDisconnectPeec}>Disconnect Peec</button>
+              </>
+            ) : (
+              <button className="btn btn-primary" onClick={handleConnectPeec} disabled={!mcpStatus?.mcp_package_installed}>
+                Connect Peec (OAuth)
+              </button>
+            )}
+            <button className="btn btn-sm" onClick={refreshMcpStatus}>Refresh status</button>
+          </div>
         </div>
       )}
 

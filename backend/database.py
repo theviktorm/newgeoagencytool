@@ -357,6 +357,39 @@ CREATE TABLE IF NOT EXISTS mcp_sync_state (
     competitors_imported INTEGER DEFAULT 0,
     auto_sync_enabled   INTEGER DEFAULT 0
 );
+
+-- ─── Per-workspace OAuth client + tokens for Peec MCP ───
+-- Peec MCP uses OAuth 2.1 with Dynamic Client Registration + PKCE.
+-- One row per (workspace, MCP server URL). access_token is a short-lived
+-- bearer; refresh_token rolls it forward.
+CREATE TABLE IF NOT EXISTS peec_oauth_clients (
+    workspace_id        TEXT NOT NULL,
+    server_url          TEXT NOT NULL,
+    issuer              TEXT DEFAULT '',
+    authorization_endpoint TEXT DEFAULT '',
+    token_endpoint      TEXT DEFAULT '',
+    registration_endpoint TEXT DEFAULT '',
+    client_id           TEXT DEFAULT '',
+    client_secret       TEXT DEFAULT '',
+    redirect_uri        TEXT DEFAULT '',
+    scope               TEXT DEFAULT '',
+    access_token        TEXT DEFAULT '',
+    refresh_token       TEXT DEFAULT '',
+    expires_at          TEXT,                  -- ISO8601 UTC
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, server_url)
+);
+
+-- ─── In-flight authorize requests (state ↔ code_verifier) ───
+-- Short-lived; cleaned up after callback or after 10 min.
+CREATE TABLE IF NOT EXISTS peec_oauth_states (
+    state               TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    server_url          TEXT NOT NULL,
+    code_verifier       TEXT NOT NULL,
+    created_at          TEXT DEFAULT (datetime('now'))
+);
 """
 
 
