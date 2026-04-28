@@ -33,10 +33,16 @@ class Settings(BaseSettings):
     )
     db_path: str = "momentus.db"  # raw path for aiosqlite
 
-    # ── Peec ──
+    # ── Peec (legacy REST) ──
     peec_api_key: str = ""
     peec_api_base_url: str = "https://api.peec.ai/v1"
     peec_api_timeout: int = 30
+
+    # ── Peec MCP (preferred — live, sentiment, competitors) ──
+    peec_mcp_url: str = "https://api.peec.ai/mcp"
+    peec_mcp_token: str = ""              # bearer token from Peec account
+    peec_mcp_timeout: int = 30
+    peec_mcp_auto_sync_minutes: int = 0   # 0 = manual only, >0 = background poll cadence
 
     # ── Anthropic / Claude ──
     anthropic_api_key: str = ""
@@ -85,6 +91,10 @@ class Settings(BaseSettings):
     @property
     def has_peec_api(self) -> bool:
         return bool(self.peec_api_key and self.peec_api_base_url)
+
+    @property
+    def has_peec_mcp(self) -> bool:
+        return bool(self.peec_mcp_token and self.peec_mcp_url)
 
     @property
     def has_claude_api(self) -> bool:

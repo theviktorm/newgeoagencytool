@@ -38,6 +38,11 @@ from .peec_connector import (
     get_project_records, get_project_sources, ingest_from_api,
     ingest_records, measure_performance, parse_csv_content,
 )
+from .peec_mcp_client import (
+    PeecMCPClient, sync_workspace_from_mcp, get_sync_state,
+    start_auto_sync, stop_auto_sync, MCP_AVAILABLE,
+)
+from .insights_engine import scan_workspace_insights
 from .scraper import scrape_urls
 from .claude_engine import ClaudeEngine
 from .cms_publisher import markdown_to_html, publish_to_cms
@@ -150,11 +155,16 @@ async def startup():
     await init_auth()
     logger.info("Initializing automation engine...")
     await init_automation()
+    if MCP_AVAILABLE and settings.has_peec_mcp and settings.peec_mcp_auto_sync_minutes > 0:
+        logger.info("Starting Peec MCP auto-sync...")
+        await start_auto_sync()
     logger.info("Momentus AI ready on port %s", settings.port)
 
 @app.on_event("shutdown")
 async def shutdown():
-    logger.info("Shutting down — closing database connection...")
+    logger.info("Shutting down — stopping background tasks...")
+    await stop_auto_sync()
+    logger.info("Closing database connection...")
     await close_db()
 
 # ═══════════════════════════════════════════════════════════════
@@ -164,6 +174,21 @@ app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(workspace_router)
 app.include_router(ops_router)
+
+# ═══════════════════════════════════════════════════════════════
+# MOUNT MOMENTUS MCP SERVER (Tier 3)
+# Exposes Momentus tools to Claude Desktop / Cursor / n8n at /mcp
+# ═══════════════════════════════════════════════════════════════
+try:
+    from .momentus_mcp_server import get_streamable_http_app
+    _mcp_asgi = get_streamable_http_app()
+    if _mcp_asgi is not None:
+        app.mount("/mcp", _mcp_asgi)
+        logger.info("Momentus MCP server mounted at /mcp")
+    else:
+        logger.info("Momentus MCP server not available (mcp package missing)")
+except Exception as _e:
+    logger.warning("Failed to mount Momentus MCP server: %s", _e)
 
 # ═══════════════════════════════════════════════════════════════
 # STATIC FRONTEND — serve index.html and dashboard.jsx
@@ -286,6 +311,51 @@ async def get_records(project_id: str):
     """Get all Peec records for a project."""
     records = await get_project_records(project_id)
     return ApiResponse(data=records, meta={"count": len(records)}).dict()
+
+# ─── Peec MCP (Tier 1: live ingestion) ─────────────────────────
+
+@app.get("/api/peec/mcp/status")
+async def peec_mcp_status():
+    """Test the Peec MCP connection and report discovered tools."""
+    client = PeecMCPClient()
+    status = await client.test_connection()
+    return ApiResponse(data=status).dict()
+
+
+@app.post("/api/peec/mcp/sync/{ws_id}")
+async def peec_mcp_sync(ws_id: str, since_hours: int = 168, limit: int = 500):
+    """Pull live data from Peec MCP into a workspace.
+
+    Replaces CSV upload as the canonical ingestion path. Writes mentions →
+    peec_records, deduplicated URLs → sources, and snapshots competitor
+    share-of-voice into competitor_history.
+    """
+    result = await sync_workspace_from_mcp(
+        workspace_id=ws_id, since_hours=since_hours, limit=limit,
+    )
+    return ApiResponse(
+        success=result.get("success", False),
+        data=result,
+        error=result.get("error") or None,
+    ).dict()
+
+
+@app.get("/api/peec/mcp/sync/{ws_id}/state")
+async def peec_mcp_sync_state(ws_id: str):
+    """Last-sync metadata for a workspace."""
+    state = await get_sync_state(ws_id)
+    return ApiResponse(data=state or {}).dict()
+
+
+# ─── Insights (Tier 2: sentiment + competitor alerts) ──────────
+
+@app.post("/api/insights/scan/{ws_id}")
+async def insights_scan(ws_id: str):
+    """Run sentiment-drop and competitor-movement detectors. Generates
+    Recommendations rows and notifications for the workspace owners."""
+    result = await scan_workspace_insights(ws_id)
+    return ApiResponse(data=result).dict()
+
 
 @app.get("/api/peec/field-mapping")
 async def get_field_mapping():

@@ -2114,6 +2114,8 @@ function RecommendationsPage({ state }) {
   const wsId = state.activeWorkspace?.id;
   const [recs, setRecs] = useState([]);
   const [filter, setFilter] = useState('new');
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState(null);
 
   const load = () => {
     if (!wsId) return;
@@ -2128,6 +2130,24 @@ function RecommendationsPage({ state }) {
     load();
   };
 
+  const runScan = async () => {
+    if (!wsId) return;
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const r = await api(`/api/insights/scan/${wsId}`, { method: 'POST' }, state.token);
+      const d = r.data || r;
+      setScanResult({
+        success: r.success !== false,
+        msg: `Scan complete — ${d.sentiment_alerts || 0} sentiment, ${d.competitor_alerts || 0} competitor, ${d.emerging_topics || 0} emerging. ${d.recommendations_created || 0} new recs.`,
+      });
+      load();
+    } catch (e) {
+      setScanResult({ success: false, msg: typeof e.message === 'string' ? e.message : JSON.stringify(e.message) });
+    }
+    setScanning(false);
+  };
+
   const typeColors = { new_topic: 'emerald', refresh: 'amber', gap: 'rose', opportunity: 'blue', competitor_alert: 'purple' };
 
   return (
@@ -2138,7 +2158,17 @@ function RecommendationsPage({ state }) {
             <button key={s} className={`btn btn-sm ${filter === s ? 'btn-primary' : ''}`} onClick={() => setFilter(s)}>{s}</button>
           ))}
         </div>
+        <button className="btn btn-sm btn-primary" onClick={runScan} disabled={scanning}>
+          {scanning ? 'Scanning...' : 'Run Insights Scan'}
+        </button>
       </div>
+      {scanResult && (
+        <div className="card mb-md" style={{ borderLeft: `3px solid var(--${scanResult.success ? 'emerald' : 'rose'})` }}>
+          <div style={{ color: scanResult.success ? 'var(--emerald)' : 'var(--rose)', padding: 8, fontSize: 12 }}>
+            {scanResult.msg}
+          </div>
+        </div>
+      )}
 
       {recs.length ? recs.map(rec => (
         <div key={rec.id} className="card mb-md">
@@ -2499,6 +2529,9 @@ function DataImportPage({ state }) {
   const [csvText, setCsvText] = useState('');
   const [importing, setImporting] = useState(false);
   const [apiSyncing, setApiSyncing] = useState(false);
+  const [mcpSyncing, setMcpSyncing] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState(null);
+  const [mcpState, setMcpState] = useState(null);
   const [importResult, setImportResult] = useState(null);
   const [tab, setTab] = useState('upload');
   const recPag = usePagination(records, 50);
@@ -2507,7 +2540,35 @@ function DataImportPage({ state }) {
     if (!wsId) return;
     api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(err => console.warn('API:', err.message));
     api('/api/peec/field-mapping', {}, token).then(r => setFieldMapping(r.data || r)).catch(err => console.warn('API:', err.message));
+    api('/api/peec/mcp/status', {}, token).then(r => setMcpStatus(r.data || r)).catch(() => {});
+    api('/api/peec/mcp/sync/' + wsId + '/state', {}, token).then(r => setMcpState(r.data || r)).catch(() => {});
   }, [wsId]);
+
+  const handleMcpSync = async () => {
+    if (!wsId) {
+      setImportResult({ success: false, msg: 'No active workspace.' });
+      return;
+    }
+    setMcpSyncing(true);
+    setImportResult(null);
+    try {
+      const r = await api('/api/peec/mcp/sync/' + wsId + '?since_hours=168&limit=500', { method: 'POST' }, token);
+      if (r.success === false) {
+        setImportResult({ success: false, msg: r.error || 'Peec MCP sync failed' });
+      } else {
+        const d = r.data || r;
+        setImportResult({
+          success: true,
+          msg: `MCP sync: ${d.mentions || 0} mentions, ${d.sources || 0} sources, ${d.competitors || 0} competitors. Insights: ${d.insights?.recommendations_created || 0} new.`,
+        });
+        api('/api/peec/records/' + wsId, {}, token).then(r => setRecords(r.data || r.records || [])).catch(() => {});
+        api('/api/peec/mcp/sync/' + wsId + '/state', {}, token).then(r => setMcpState(r.data || r)).catch(() => {});
+      }
+    } catch (e) {
+      setImportResult({ success: false, msg: typeof e.message === 'string' ? e.message : JSON.stringify(e.message) });
+    }
+    setMcpSyncing(false);
+  };
 
   const handleCsvImport = async () => {
     if (!csvText.trim()) {
@@ -2590,9 +2651,9 @@ function DataImportPage({ state }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {['upload', 'api', 'records', 'mapping'].map(t => (
+        {['upload', 'mcp', 'api', 'records', 'mapping'].map(t => (
           <button key={t} className={`btn ${tab === t ? 'btn-primary' : ''}`} onClick={() => setTab(t)}>
-            {t === 'upload' ? 'CSV Upload' : t === 'api' ? 'Peec API Sync' : t === 'records' ? `Records (${records.length})` : 'Field Mapping'}
+            {t === 'upload' ? 'CSV Upload' : t === 'mcp' ? 'Peec MCP (live)' : t === 'api' ? 'Peec API Sync' : t === 'records' ? `Records (${records.length})` : 'Field Mapping'}
           </button>
         ))}
       </div>
@@ -2630,6 +2691,53 @@ function DataImportPage({ state }) {
         </div>
       )}
 
+      {tab === 'mcp' && (
+        <div className="card">
+          <div className="card-header">Peec MCP — Live Citation Stream</div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 16 }}>
+            Pulls fresh mentions, sources, competitors, and sentiment directly from Peec's Model Context Protocol endpoint —
+            no CSV exports, no rate-limited REST loops. Each sync also runs the Insights engine to surface
+            sentiment drops, competitor moves, and untapped clusters.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+            <div className="card" style={{ padding: 12 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Endpoint</div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+                {mcpStatus?.url || '—'}
+              </div>
+              <div style={{ fontSize: 11, color: mcpStatus?.configured ? 'var(--emerald)' : 'var(--rose)' }}>
+                {mcpStatus?.configured ? 'configured' : 'set GEO_PEEC_MCP_TOKEN in .env'}
+              </div>
+            </div>
+            <div className="card" style={{ padding: 12 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Auto-sync</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>
+                {mcpStatus?.auto_sync_minutes ? `every ${mcpStatus.auto_sync_minutes}m` : 'manual only'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {mcpStatus?.mcp_package_installed ? 'mcp package: installed' : 'mcp package: missing'}
+              </div>
+            </div>
+            <div className="card" style={{ padding: 12 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Last sync</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>
+                {mcpState?.last_sync_at ? new Date(mcpState.last_sync_at).toLocaleString() : '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {mcpState?.last_status || 'never run'}
+              </div>
+            </div>
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={handleMcpSync}
+            disabled={mcpSyncing || !mcpStatus?.configured || !mcpStatus?.mcp_package_installed}
+          >
+            {mcpSyncing ? 'Syncing via MCP...' : 'Sync via Peec MCP'}
+          </button>
+        </div>
+      )}
+
       {tab === 'api' && (
         <div className="card">
           <div className="card-header">Peec API Integration</div>
@@ -2661,19 +2769,26 @@ function DataImportPage({ state }) {
             <div className="empty-state">{'\u21E9'}<br/>No records imported yet. Upload a CSV or sync from the Peec API.</div>
           ) : (
             <><table className="data-table"><thead><tr>
-              <th>Title</th><th>URL</th><th>Model</th><th>Citations</th><th>Rate</th><th>Usage</th><th>Topic</th><th>Imported</th>
-            </tr></thead><tbody>{recPag.paged.map((r, i) => (
+              <th>Title</th><th>URL</th><th>Model</th><th>Citations</th><th>Rate</th><th>Sentiment</th><th>Usage</th><th>Topic</th><th>Imported</th>
+            </tr></thead><tbody>{recPag.paged.map((r, i) => {
+              const sLabel = r.sentiment;
+              const sScore = r.sentiment_score;
+              const sColor = sLabel === 'positive' ? 'var(--emerald)' : sLabel === 'negative' ? 'var(--rose)' : sLabel === 'neutral' ? 'var(--text-muted)' : 'var(--text-muted)';
+              return (
               <tr key={i}>
                 <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.title || r.prompt || r.query || '—'}</td>
                 <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-mono)', fontSize: 10 }}>{r.url || '—'}</td>
                 <td><span className="badge">{r.model_source || r.model || r.platform || '—'}</span></td>
                 <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{r.citation_count ?? '—'}</td>
                 <td>{r.citation_rate != null ? (r.citation_rate * 100).toFixed(1) + '%' : '—'}</td>
+                <td style={{ color: sColor, fontSize: 11 }}>
+                  {sLabel ? `${sLabel}${sScore != null ? ` (${Number(sScore).toFixed(2)})` : ''}` : '—'}
+                </td>
                 <td>{r.usage_count ?? '—'}</td>
                 <td>{r.topic || (Array.isArray(r.tags) ? r.tags[0] : r.tag) || '—'}</td>
                 <td style={{ fontSize: 10, color: 'var(--text-muted)' }}>{r.imported_at ? new Date(r.imported_at).toLocaleDateString() : '—'}</td>
               </tr>
-            ))}</tbody></table>
+            );})}</tbody></table>
             <PaginationBar {...recPag} label="records" /></>
           )}
         </div>
@@ -2779,13 +2894,16 @@ function SourcesPage({ state }) {
             <div className="empty-state">{'\u25C9'}<br/>No sources discovered yet. Import Peec data to populate sources.</div>
           ) : (
             <><table className="data-table"><thead><tr>
-              <th>#</th><th>URL</th><th>Citations</th><th>Rate</th><th>Visibility</th><th>Quality</th><th>Models</th>
+              <th>#</th><th>URL</th><th>Citations</th><th>Rate</th><th>Sentiment</th><th>Visibility</th><th>Quality</th><th>Models</th>
             </tr></thead><tbody>{srcPag.paged.map((s, i) => (
               <tr key={i}>
                 <td style={{ color: 'var(--text-muted)' }}>{srcPag.page * 50 + i + 1}</td>
                 <td style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.url}</td>
                 <td style={{ fontWeight: 600, color: 'var(--emerald)' }}>{getCite(s)}</td>
                 <td>{(s.max_citation_rate ?? s.citation_rate) != null ? ((s.max_citation_rate ?? s.citation_rate) * 100).toFixed(1) + '%' : '—'}</td>
+                <td style={{ fontSize: 11, color: s.avg_sentiment_score == null ? 'var(--text-muted)' : s.avg_sentiment_score > 0.1 ? 'var(--emerald)' : s.avg_sentiment_score < -0.1 ? 'var(--rose)' : 'var(--text-secondary)' }}>
+                  {s.avg_sentiment_score != null ? (s.avg_sentiment_score >= 0 ? '+' : '') + Number(s.avg_sentiment_score).toFixed(2) : '—'}
+                </td>
                 <td>{s.visibility != null ? Number(s.visibility).toFixed(2) : '—'}</td>
                 <td>{s.quality_score != null ? Number(s.quality_score).toFixed(1) : '—'}</td>
                 <td style={{ fontSize: 10 }}>{(() => {

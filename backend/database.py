@@ -306,10 +306,88 @@ async def close_db():
         _db_pool = None
 
 
+MCP_SCHEMA = """
+-- ─── MCP-driven mention events (live stream from Peec MCP) ───
+-- One row per (url, model, prompt) observation. Lets us track sentiment
+-- and citation deltas over time without re-importing CSVs.
+CREATE TABLE IF NOT EXISTS mention_events (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    prompt          TEXT DEFAULT '',
+    model_source    TEXT DEFAULT 'Other',
+    citation_count  INTEGER DEFAULT 0,
+    citation_rate   REAL DEFAULT 0.0,
+    position        REAL DEFAULT 0.0,
+    sentiment       TEXT DEFAULT '',          -- positive | neutral | negative | ''
+    sentiment_score REAL DEFAULT 0.0,         -- -1.0 .. 1.0
+    raw             TEXT DEFAULT '{}',        -- JSON: full MCP payload
+    observed_at     TEXT DEFAULT (datetime('now')),
+    sync_batch_id   TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_mevents_project ON mention_events(project_id);
+CREATE INDEX IF NOT EXISTS idx_mevents_url ON mention_events(url);
+CREATE INDEX IF NOT EXISTS idx_mevents_observed ON mention_events(observed_at);
+CREATE INDEX IF NOT EXISTS idx_mevents_sentiment ON mention_events(sentiment);
+
+-- ─── Competitor share-of-voice history (one row per snapshot) ───
+CREATE TABLE IF NOT EXISTS competitor_history (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    competitor_id       TEXT DEFAULT '',
+    domain              TEXT NOT NULL,
+    citation_count      INTEGER DEFAULT 0,
+    share_of_voice      REAL DEFAULT 0.0,     -- 0..1
+    avg_position        REAL DEFAULT 0.0,
+    top_topics          TEXT DEFAULT '[]',
+    observed_at         TEXT DEFAULT (datetime('now')),
+    sync_batch_id       TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_chist_workspace ON competitor_history(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_chist_observed ON competitor_history(observed_at);
+
+-- ─── Per-workspace MCP sync state ───
+CREATE TABLE IF NOT EXISTS mcp_sync_state (
+    workspace_id        TEXT PRIMARY KEY,
+    last_sync_at        TEXT,
+    last_sync_status    TEXT DEFAULT '',      -- ok | error | partial
+    last_sync_error     TEXT DEFAULT '',
+    last_batch_id       TEXT DEFAULT '',
+    mentions_imported   INTEGER DEFAULT 0,
+    competitors_imported INTEGER DEFAULT 0,
+    auto_sync_enabled   INTEGER DEFAULT 0
+);
+"""
+
+
+async def _migrate(db: aiosqlite.Connection):
+    """Idempotent ALTER TABLE migrations. SQLite throws on duplicate columns;
+    catch and continue. Cheap on every boot."""
+    migrations = [
+        # Sentiment on Peec records (Tier 2)
+        "ALTER TABLE peec_records ADD COLUMN sentiment TEXT DEFAULT ''",
+        "ALTER TABLE peec_records ADD COLUMN sentiment_score REAL DEFAULT 0.0",
+        "ALTER TABLE peec_records ADD COLUMN position REAL DEFAULT 0.0",
+        # Sentiment rollup on sources
+        "ALTER TABLE sources ADD COLUMN avg_sentiment_score REAL DEFAULT 0.0",
+        "ALTER TABLE sources ADD COLUMN last_seen_at TEXT",
+        # Source attribution: which prompt(s) cited this URL
+        "ALTER TABLE sources ADD COLUMN sample_prompts TEXT DEFAULT '[]'",
+    ]
+    for sql in migrations:
+        try:
+            await db.execute(sql)
+        except Exception:
+            # column already exists or table doesn't yet — ignore
+            pass
+
+
 async def init_db():
     """Initialize database schema. Safe to call multiple times."""
     db = await get_db()
     await db.executescript(SCHEMA)
+    await db.executescript(MCP_SCHEMA)
+    await _migrate(db)
     await db.execute(
         "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
         (settings.project_id, settings.project_name),
