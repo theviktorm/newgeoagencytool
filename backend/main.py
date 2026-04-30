@@ -430,6 +430,330 @@ async def insights_scan(ws_id: str):
     return ApiResponse(data=result).dict()
 
 
+# ═══════════════════════════════════════════════════════════════
+# CONQUER ROUTES — 11-engine GEO platform
+# ═══════════════════════════════════════════════════════════════
+# Imports kept inside the route bodies only when the engine has heavy
+# transitive deps; everything else imports at module top via lazy stubs
+# so the OpenAPI spec stays clean.
+from . import (
+    prompt_engine, prompt_tracker, citation_intelligence, attack_map,
+    revenue_priority, buyer_journey, reddit_engine, schema_engine,
+    ai_overview, metadata_engine, authority_score, youtube_engine,
+)
+
+
+# ─── 1. Prompt Ownership Engine ────────────────────────────────
+
+@app.get("/api/prompts/{ws_id}")
+async def prompts_list(ws_id: str, stage: str = "", min_revenue: float = 0, limit: int = 500):
+    rows = await prompt_engine.list_prompts(ws_id, stage=stage, min_revenue=min_revenue, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/prompts/{ws_id}")
+async def prompts_upsert(ws_id: str, payload: Dict[str, Any]):
+    text = (payload or {}).get("text", "")
+    target_brand = (payload or {}).get("target_brand", "")
+    target_url = (payload or {}).get("target_url", "")
+    cluster_id = (payload or {}).get("cluster_id", "")
+    classify = bool((payload or {}).get("classify", True))
+    row = await prompt_engine.upsert_prompt(
+        ws_id, text, target_brand=target_brand, target_url=target_url,
+        cluster_id=cluster_id, classify=classify,
+    )
+    return ApiResponse(data=row).dict()
+
+
+@app.post("/api/prompts/{ws_id}/bulk")
+async def prompts_bulk(ws_id: str, payload: Dict[str, Any]):
+    texts = (payload or {}).get("texts") or []
+    if not isinstance(texts, list):
+        raise HTTPException(400, "texts must be a list")
+    res = await prompt_engine.bulk_upsert_prompts(ws_id, texts,
+        target_brand=(payload or {}).get("target_brand", ""), classify=False)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/prompts/{ws_id}/reclassify")
+async def prompts_reclassify(ws_id: str, max_n: int = 200):
+    res = await prompt_engine.reclassify_workspace(ws_id, max_n=max_n)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/prompts/{ws_id}/track/{prompt_id}")
+async def prompt_track_one(ws_id: str, prompt_id: str, payload: Optional[Dict[str, Any]] = None):
+    models = (payload or {}).get("models")
+    res = await prompt_tracker.track_prompt(ws_id, prompt_id, models=models)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/prompts/{ws_id}/track")
+async def prompt_track_workspace(ws_id: str, only_high_value: bool = True, max_prompts: int = 50, payload: Optional[Dict[str, Any]] = None):
+    models = (payload or {}).get("models") if payload else None
+    res = await prompt_tracker.track_workspace(
+        ws_id, only_high_value=only_high_value, max_prompts=max_prompts, models=models,
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/prompts/{ws_id}/battlefield")
+async def prompts_battlefield(ws_id: str):
+    res = await prompt_engine.battlefield_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── 2. Citation Intelligence Layer ────────────────────────────
+
+@app.post("/api/intel/diagnose/{ws_id}/{prompt_id}")
+async def intel_diagnose(ws_id: str, prompt_id: str, competitor_domain: str = "", max_pages: int = 2):
+    res = await citation_intelligence.diagnose_prompt(
+        ws_id, prompt_id, competitor_domain=competitor_domain, max_pages=max_pages,
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/intel/diagnose/{ws_id}")
+async def intel_diagnose_workspace(ws_id: str, top_n: int = 10):
+    res = await citation_intelligence.diagnose_workspace(ws_id, top_n=top_n)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/intel/diagnostics/{ws_id}")
+async def intel_list(ws_id: str, limit: int = 100):
+    rows = await citation_intelligence.list_diagnostics(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── 3. GEO Attack Map ─────────────────────────────────────────
+
+@app.get("/api/attack-map/{ws_id}")
+async def attack_map_list(ws_id: str):
+    rows = await attack_map.list_attack_map(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/attack-map/{ws_id}/analyze")
+async def attack_map_analyze(ws_id: str, payload: Dict[str, Any]):
+    domain = (payload or {}).get("competitor_domain", "")
+    if not domain:
+        raise HTTPException(400, "competitor_domain required")
+    res = await attack_map.analyze_competitor(ws_id, domain,
+        sample_urls=int((payload or {}).get("sample_urls", 3)))
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/attack-map/{ws_id}/movements")
+async def attack_map_movements(ws_id: str, days: int = 14):
+    rows = await attack_map.list_movements(ws_id, days=days)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── 4. Revenue Priority Layer ─────────────────────────────────
+
+@app.get("/api/revenue/{ws_id}/summary")
+async def revenue_summary_route(ws_id: str):
+    res = await revenue_priority.revenue_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/revenue/{ws_id}/priority")
+async def revenue_priority_route(ws_id: str, top_n: int = 10):
+    rows = await revenue_priority.revenue_priority_recs(ws_id, top_n=top_n)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/revenue/{ws_id}/push-recs")
+async def revenue_push_recs(ws_id: str, top_n: int = 5):
+    res = await revenue_priority.push_recommendations(ws_id, top_n=top_n)
+    return ApiResponse(data=res).dict()
+
+
+# ─── 5. Buyer Journey Coverage Map ─────────────────────────────
+
+@app.get("/api/journey/{ws_id}")
+async def journey_get(ws_id: str, refresh: bool = True):
+    res = await buyer_journey.coverage_map(ws_id, refresh=refresh)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/journey/{ws_id}/classify")
+async def journey_classify(ws_id: str):
+    res = await buyer_journey.classify_workspace(ws_id, force=True)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/journey/{ws_id}/deep-classify")
+async def journey_deep_classify(ws_id: str, payload: Dict[str, Any]):
+    urls = (payload or {}).get("urls") or []
+    res = await buyer_journey.deep_classify_pages(ws_id, urls)
+    return ApiResponse(data=res).dict()
+
+
+# ─── 6. Reddit GEO Engine ──────────────────────────────────────
+
+@app.post("/api/reddit/{ws_id}/harvest")
+async def reddit_harvest(ws_id: str):
+    res = await reddit_engine.harvest_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/reddit/{ws_id}")
+async def reddit_list(ws_id: str, only_gaps: bool = False):
+    rows = await reddit_engine.list_intel(ws_id, only_gaps=only_gaps)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/reddit/{ws_id}/command-center")
+async def reddit_cc(ws_id: str):
+    res = await reddit_engine.command_center(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── 7. Schema Opportunity Engine ──────────────────────────────
+
+@app.post("/api/schema/{ws_id}/audit")
+async def schema_audit_one(ws_id: str, payload: Dict[str, Any]):
+    url = (payload or {}).get("url", "")
+    if not url:
+        raise HTTPException(400, "url required")
+    res = await schema_engine.audit_url(ws_id, url,
+        target_prompts=(payload or {}).get("target_prompts") or [],
+        is_competitor=bool((payload or {}).get("is_competitor", False)))
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/schema/{ws_id}/audit-workspace")
+async def schema_audit_ws(ws_id: str, top_n: int = 20):
+    res = await schema_engine.audit_workspace(ws_id, top_n=top_n)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/schema/{ws_id}")
+async def schema_list(ws_id: str, limit: int = 200):
+    rows = await schema_engine.list_audits(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── 8. Google AI Overview Engine ──────────────────────────────
+
+@app.get("/api/aio/{ws_id}")
+async def aio_overview(ws_id: str):
+    res = await ai_overview.overview(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/aio/{ws_id}/losses")
+async def aio_losses(ws_id: str, limit: int = 50):
+    rows = await ai_overview.list_losses(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/aio/{ws_id}/detect-movements")
+async def aio_movements(ws_id: str):
+    res = await ai_overview.detect_movements(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── 9. Metadata + Snippet Engine ──────────────────────────────
+
+@app.post("/api/metadata/{ws_id}/draft/{draft_id}")
+async def metadata_for_draft(ws_id: str, draft_id: str):
+    res = await metadata_engine.generate_for_draft(draft_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/metadata/{ws_id}/url")
+async def metadata_for_url(ws_id: str, payload: Dict[str, Any]):
+    url = (payload or {}).get("url", "")
+    if not url:
+        raise HTTPException(400, "url required")
+    if (payload or {}).get("audit"):
+        res = await metadata_engine.audit_url(ws_id, url)
+    else:
+        res = await metadata_engine.generate_for_url(ws_id, url)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/metadata/{ws_id}")
+async def metadata_list(ws_id: str, limit: int = 100):
+    rows = await metadata_engine.list_packages(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── 10. GEO Authority Score ───────────────────────────────────
+
+@app.post("/api/authority/{ws_id}/compute")
+async def authority_compute(ws_id: str):
+    res = await authority_score.compute_for_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/authority/{ws_id}/rebuild")
+async def authority_rebuild(ws_id: str):
+    res = await authority_score.rebuild_all(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/authority/{ws_id}/latest")
+async def authority_latest(ws_id: str):
+    res = await authority_score.latest(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/authority/{ws_id}/timeseries")
+async def authority_ts(ws_id: str, subject_domain: str, months: int = 12):
+    rows = await authority_score.timeseries(ws_id, subject_domain, months=months)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── 11. YouTube GEO Optimizer ─────────────────────────────────
+
+@app.post("/api/youtube/{ws_id}/generate")
+async def youtube_generate(ws_id: str, payload: Dict[str, Any]):
+    p = payload or {}
+    res = await youtube_engine.generate(
+        ws_id,
+        topic=p.get("topic", ""),
+        expert_name=p.get("expert_name", ""),
+        connected_service=p.get("connected_service", ""),
+        target_prompt_ids=p.get("target_prompt_ids") or [],
+        goal=p.get("goal", "trust"),
+        transcript=p.get("transcript", ""),
+        video_url=p.get("video_url", ""),
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/youtube/{ws_id}/audit")
+async def youtube_audit_route(ws_id: str, payload: Dict[str, Any]):
+    p = payload or {}
+    if not p.get("video_url"):
+        raise HTTPException(400, "video_url required")
+    res = await youtube_engine.audit(
+        ws_id, video_url=p.get("video_url", ""),
+        title=p.get("title", ""), description=p.get("description", ""),
+        transcript=p.get("transcript", ""),
+        target_prompt_ids=p.get("target_prompt_ids") or [],
+        expert_name=p.get("expert_name", ""),
+        connected_service=p.get("connected_service", ""),
+        goal=p.get("goal", "trust"),
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/youtube/{ws_id}")
+async def youtube_list(ws_id: str, limit: int = 100):
+    rows = await youtube_engine.list_assets(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/youtube/asset/{asset_id}/publish-package")
+async def youtube_publish(asset_id: str):
+    res = await youtube_engine.export_publish_package(asset_id)
+    return ApiResponse(data=res).dict()
+
+
 @app.get("/api/peec/field-mapping")
 async def get_field_mapping():
     """Return the Peec field mapping spec."""

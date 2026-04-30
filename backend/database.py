@@ -393,6 +393,333 @@ CREATE TABLE IF NOT EXISTS peec_oauth_states (
 """
 
 
+# ═══════════════════════════════════════════════════════════════
+# CONQUER_SCHEMA — 11 engines from the GEO conquest spec
+# ═══════════════════════════════════════════════════════════════
+
+CONQUER_SCHEMA = """
+-- ───────────────────────────────────────────────────────────────
+-- 1. PROMPT OWNERSHIP ENGINE
+--    The actual battlefield: questions AI answers, not URLs.
+-- ───────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS prompts (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    text                TEXT NOT NULL,
+    language            TEXT DEFAULT 'en',
+    -- prompt_type: informational | comparative | decision | purchase
+    prompt_type         TEXT DEFAULT 'informational',
+    -- buyer_stage: awareness | problem | solution | comparison | trust | objection | decision
+    buyer_stage         TEXT DEFAULT 'awareness',
+    revenue_score       REAL DEFAULT 0.0,        -- 0..100, business value
+    estimated_value_eur REAL DEFAULT 0.0,        -- per-conversion EUR estimate (optional)
+    target_brand        TEXT DEFAULT '',         -- the brand we want to own this
+    target_url          TEXT DEFAULT '',         -- the page that should win
+    cluster_id          TEXT DEFAULT '',
+    status              TEXT DEFAULT 'tracked',  -- tracked | ignored | won | lost
+    classifier_meta     TEXT DEFAULT '{}',       -- JSON: LLM rationale, tags, etc.
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_prompts_workspace ON prompts(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_prompts_stage ON prompts(buyer_stage);
+CREATE INDEX IF NOT EXISTS idx_prompts_revenue ON prompts(revenue_score DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_uniq ON prompts(workspace_id, text);
+
+-- One row per (prompt, model, observed_at): the AI SERP tracker.
+CREATE TABLE IF NOT EXISTS prompt_observations (
+    id                  TEXT PRIMARY KEY,
+    prompt_id           TEXT NOT NULL,
+    workspace_id        TEXT NOT NULL,
+    model               TEXT NOT NULL,           -- chatgpt | gemini | perplexity | claude | google_aio
+    observed_at         TEXT DEFAULT (datetime('now')),
+    -- Brands seen in the answer, in order. JSON list of {name, position, snippet}
+    brands_appeared     TEXT DEFAULT '[]',
+    -- Sources/URLs the AI cited. JSON list of {url, domain, title, position}
+    sources_cited       TEXT DEFAULT '[]',
+    our_brand_present   INTEGER DEFAULT 0,       -- 1 = our target brand surfaced
+    our_brand_position  INTEGER DEFAULT 0,       -- 1 = first mention
+    ai_overview_present INTEGER DEFAULT 0,       -- 1 = Google AI Overview visible
+    answer_text         TEXT DEFAULT '',         -- raw AI answer (truncated)
+    sentiment_score     REAL DEFAULT 0.0,
+    sync_batch_id       TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pobs_prompt ON prompt_observations(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_pobs_workspace ON prompt_observations(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_pobs_observed ON prompt_observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_pobs_model ON prompt_observations(model);
+
+-- Per-prompt rolling ownership snapshot. Refreshed on every observation.
+CREATE TABLE IF NOT EXISTS prompt_ownership (
+    workspace_id        TEXT NOT NULL,
+    prompt_id           TEXT NOT NULL,
+    -- Our ownership: 0..100 weighted by mentions × position × model coverage
+    our_score           REAL DEFAULT 0.0,
+    -- Top competitor: domain + score they hold
+    leader_domain       TEXT DEFAULT '',
+    leader_score        REAL DEFAULT 0.0,
+    -- Full breakdown: JSON {"medicover.hu": 78, "waberer.hu": 45, ...}
+    competitor_scores   TEXT DEFAULT '{}',
+    models_covered      INTEGER DEFAULT 0,
+    last_observed_at    TEXT,
+    PRIMARY KEY (workspace_id, prompt_id)
+);
+
+-- Campaign goals: "Q2: own top 10 orthopedic prompts in Budapest"
+CREATE TABLE IF NOT EXISTS campaign_goals (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    description         TEXT DEFAULT '',
+    target_prompts      TEXT DEFAULT '[]',       -- JSON list of prompt_ids
+    target_ownership    REAL DEFAULT 70.0,       -- target our_score average
+    starts_at           TEXT,
+    ends_at             TEXT,
+    status              TEXT DEFAULT 'active',   -- active | won | abandoned
+    progress_score      REAL DEFAULT 0.0,
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_camp_workspace ON campaign_goals(workspace_id);
+
+-- ───────────────────────────────────────────────────────────────
+-- 2. CITATION INTELLIGENCE LAYER
+--    Why are we losing? Not just who is winning.
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS citation_diagnostics (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    prompt_id           TEXT DEFAULT '',
+    cluster_id          TEXT DEFAULT '',
+    competitor_domain   TEXT NOT NULL,
+    analyzed_url        TEXT DEFAULT '',
+    -- Sub-scores (0..100): each is "how strong is competitor on THIS axis"
+    content_score       REAL DEFAULT 0.0,        -- topical depth, FAQ, comparison, decision support
+    schema_score        REAL DEFAULT 0.0,        -- schema breadth + depth
+    authority_score     REAL DEFAULT 0.0,        -- PR, podcasts, mentions
+    reddit_score        REAL DEFAULT 0.0,
+    youtube_score       REAL DEFAULT 0.0,
+    entity_score        REAL DEFAULT 0.0,        -- entity consistency across platforms
+    -- Free-text diagnosis from Claude: the WHY
+    diagnosis           TEXT DEFAULT '',
+    -- Concrete remediation steps. JSON list of {step, priority, impact}
+    actions             TEXT DEFAULT '[]',
+    raw_evidence        TEXT DEFAULT '{}',       -- JSON: scraped content, schema, etc.
+    analyzed_at         TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cdiag_workspace ON citation_diagnostics(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_cdiag_prompt ON citation_diagnostics(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_cdiag_competitor ON citation_diagnostics(competitor_domain);
+
+-- ───────────────────────────────────────────────────────────────
+-- 3. GEO ATTACK MAP
+--    Per-competitor strength × weakness matrix for tactical strikes.
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS competitor_capabilities (
+    workspace_id        TEXT NOT NULL,
+    competitor_domain   TEXT NOT NULL,
+    -- 9 dimensions from the conquer spec; scored 0..100.
+    schema_score        REAL DEFAULT 0.0,
+    reddit_score        REAL DEFAULT 0.0,
+    youtube_score       REAL DEFAULT 0.0,
+    faq_depth_score     REAL DEFAULT 0.0,
+    decision_support_score REAL DEFAULT 0.0,
+    review_score        REAL DEFAULT 0.0,
+    entity_consistency_score REAL DEFAULT 0.0,
+    pr_score            REAL DEFAULT 0.0,
+    local_authority_score REAL DEFAULT 0.0,
+    overall_strength    REAL DEFAULT 0.0,
+    -- Cached recommendation: where to attack first
+    weakest_axis        TEXT DEFAULT '',
+    weakest_axis_score  REAL DEFAULT 0.0,
+    summary             TEXT DEFAULT '',
+    analyzed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, competitor_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_capabilities_workspace ON competitor_capabilities(workspace_id);
+
+-- Time-series of capability scores so we can fire alerts when a competitor
+-- suddenly gains in a dimension ("competitor gained Reddit authority").
+CREATE TABLE IF NOT EXISTS capability_history (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    competitor_domain   TEXT NOT NULL,
+    axis                TEXT NOT NULL,           -- schema | reddit | youtube | ...
+    score               REAL DEFAULT 0.0,
+    delta_vs_prev       REAL DEFAULT 0.0,
+    observed_at         TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_caphist_workspace ON capability_history(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_caphist_observed ON capability_history(observed_at);
+
+-- ───────────────────────────────────────────────────────────────
+-- 5. REDDIT GEO ENGINE
+--    Treat Reddit citations as authority infrastructure, not URLs.
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS reddit_intel (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    subreddit           TEXT NOT NULL,
+    thread_url          TEXT NOT NULL,
+    thread_title        TEXT DEFAULT '',
+    prompt_id           TEXT DEFAULT '',         -- which prompt surfaced this
+    discussion_type     TEXT DEFAULT '',         -- recommendation | review | question | comparison
+    brands_mentioned    TEXT DEFAULT '[]',
+    our_brand_mentioned INTEGER DEFAULT 0,
+    sentiment_score     REAL DEFAULT 0.0,
+    sentiment_label     TEXT DEFAULT '',
+    is_opportunity_gap  INTEGER DEFAULT 0,       -- 1 = our brand absent
+    suggested_action    TEXT DEFAULT '',         -- what to seed/comment/reply
+    observed_at         TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reddit_workspace ON reddit_intel(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_reddit_subreddit ON reddit_intel(subreddit);
+CREATE INDEX IF NOT EXISTS idx_reddit_gap ON reddit_intel(is_opportunity_gap);
+
+-- ───────────────────────────────────────────────────────────────
+-- 6. SCHEMA OPPORTUNITY ENGINE
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS schema_audits (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    page_url            TEXT NOT NULL,
+    is_competitor       INTEGER DEFAULT 0,       -- 1 = competitor, 0 = our page
+    -- JSON list of detected schema types
+    schema_types        TEXT DEFAULT '[]',
+    schema_depth_score  REAL DEFAULT 0.0,        -- 0..100
+    -- JSON list of {type, missing_fields, severity, why_it_hurts}
+    missing_critical    TEXT DEFAULT '[]',
+    target_prompts      TEXT DEFAULT '[]',
+    diagnosis           TEXT DEFAULT '',
+    recommendations     TEXT DEFAULT '[]',
+    raw_jsonld          TEXT DEFAULT '[]',
+    analyzed_at         TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_schaud_workspace ON schema_audits(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_schaud_page ON schema_audits(page_url);
+
+-- ───────────────────────────────────────────────────────────────
+-- 7. BUYER JOURNEY COVERAGE MAP
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS journey_coverage (
+    workspace_id        TEXT NOT NULL,
+    stage               TEXT NOT NULL,           -- one of 7 stages
+    page_count          INTEGER DEFAULT 0,
+    prompt_count        INTEGER DEFAULT 0,
+    citation_count      INTEGER DEFAULT 0,
+    coverage_score      REAL DEFAULT 0.0,        -- 0..100 vs benchmark
+    gap_severity        TEXT DEFAULT 'none',     -- none | low | medium | critical
+    recommendation      TEXT DEFAULT '',
+    analyzed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, stage)
+);
+
+-- Per-page stage classification (lets us answer "do we have a comparison
+-- page for prompt X?"). Filled by buyer_journey.classify_workspace.
+CREATE TABLE IF NOT EXISTS page_stages (
+    workspace_id        TEXT NOT NULL,
+    url                 TEXT NOT NULL,
+    stage               TEXT NOT NULL,
+    confidence          REAL DEFAULT 0.0,
+    classified_at       TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, url)
+);
+
+-- ───────────────────────────────────────────────────────────────
+-- 8. GOOGLE AI OVERVIEW ENGINE
+--    Subset of prompt_observations where model='google_aio', plus a
+--    purpose-built tracker so alerts fire fast.
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS aio_tracking (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    prompt_id           TEXT NOT NULL,
+    observed_at         TEXT DEFAULT (datetime('now')),
+    aio_present         INTEGER DEFAULT 0,
+    our_brand_in_aio    INTEGER DEFAULT 0,
+    visible_brands      TEXT DEFAULT '[]',
+    source_urls         TEXT DEFAULT '[]',
+    publisher_domains   TEXT DEFAULT '[]',
+    snapshot_html       TEXT DEFAULT '',
+    delta_vs_prev       TEXT DEFAULT ''          -- e.g. "competitor entered", "AIO appeared"
+);
+CREATE INDEX IF NOT EXISTS idx_aio_workspace ON aio_tracking(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_aio_observed ON aio_tracking(observed_at);
+
+-- ───────────────────────────────────────────────────────────────
+-- 9. METADATA + SNIPPET OPTIMIZATION ENGINE
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS metadata_packages (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    page_url            TEXT DEFAULT '',
+    draft_id            TEXT DEFAULT '',         -- linked to drafts.id when generated for a draft
+    seo_title           TEXT DEFAULT '',
+    meta_description    TEXT DEFAULT '',
+    og_title            TEXT DEFAULT '',
+    og_description      TEXT DEFAULT '',
+    canonical_url       TEXT DEFAULT '',
+    snippet_target      TEXT DEFAULT '',         -- the question this page should win
+    faq_extractions     TEXT DEFAULT '[]',       -- JSON: list of {q, a}
+    internal_links      TEXT DEFAULT '[]',       -- JSON: suggested authority pages to link
+    aio_compatibility_score REAL DEFAULT 0.0,    -- 0..100
+    audit_findings      TEXT DEFAULT '[]',       -- if generated as audit, what's wrong
+    generated_at        TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_meta_workspace ON metadata_packages(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_meta_draft ON metadata_packages(draft_id);
+
+-- ───────────────────────────────────────────────────────────────
+-- 10. GEO AUTHORITY SCORE
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS authority_scores (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    subject_domain      TEXT NOT NULL,           -- our domain or a competitor's
+    is_us               INTEGER DEFAULT 0,
+    observed_at         TEXT DEFAULT (datetime('now')),
+    -- Total + 7 sub-scores (0..100)
+    total_score         REAL DEFAULT 0.0,
+    citation_score      REAL DEFAULT 0.0,
+    prompt_ownership_score REAL DEFAULT 0.0,
+    schema_score        REAL DEFAULT 0.0,
+    offsite_score       REAL DEFAULT 0.0,
+    reddit_score        REAL DEFAULT 0.0,
+    entity_score        REAL DEFAULT 0.0,
+    local_score         REAL DEFAULT 0.0,
+    -- breakdown JSON: {"why_total": "...", "biggest_lever": "..."}
+    rationale           TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_authsc_workspace ON authority_scores(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_authsc_observed ON authority_scores(observed_at);
+CREATE INDEX IF NOT EXISTS idx_authsc_subject ON authority_scores(subject_domain);
+
+-- ───────────────────────────────────────────────────────────────
+-- 11. YOUTUBE GEO OPTIMIZER
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS youtube_assets (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    video_url           TEXT DEFAULT '',
+    topic               TEXT DEFAULT '',
+    expert_name         TEXT DEFAULT '',
+    connected_service   TEXT DEFAULT '',
+    target_prompts      TEXT DEFAULT '[]',       -- JSON list of prompt_ids
+    goal                TEXT DEFAULT '',         -- trust | lead-gen | FAQ | comparison
+    -- Generated package fields
+    optimized_title     TEXT DEFAULT '',
+    description         TEXT DEFAULT '',
+    chapters            TEXT DEFAULT '[]',       -- JSON list of {ts, title}
+    faq_extractions     TEXT DEFAULT '[]',
+    embed_strategy      TEXT DEFAULT '',
+    schema_recommendation TEXT DEFAULT '',
+    audit_findings      TEXT DEFAULT '[]',
+    generated_at        TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_yt_workspace ON youtube_assets(workspace_id);
+"""
+
+
 async def _migrate(db: aiosqlite.Connection):
     """Idempotent ALTER TABLE migrations. SQLite throws on duplicate columns;
     catch and continue. Cheap on every boot."""
@@ -420,6 +747,7 @@ async def init_db():
     db = await get_db()
     await db.executescript(SCHEMA)
     await db.executescript(MCP_SCHEMA)
+    await db.executescript(CONQUER_SCHEMA)
     await _migrate(db)
     await db.execute(
         "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",

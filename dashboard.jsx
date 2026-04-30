@@ -255,6 +255,19 @@ const NAV_ITEMS = [
     { id: 'recommendations', label: 'Recommendations', icon: '\u2605' },
     { id: 'onboarding', label: 'Onboarding', icon: '\u2714' },
   ]},
+  { section: 'GEO Conquest', items: [
+    { id: 'battlefield', label: 'Prompt Battlefield', icon: '\u2691' },
+    { id: 'citation_intel', label: 'Citation Intel', icon: '\u25ce' },
+    { id: 'attack_map', label: 'Attack Map', icon: '\u2694' },
+    { id: 'revenue', label: 'Revenue Priority', icon: '\u20ac' },
+    { id: 'journey', label: 'Buyer Journey', icon: '\u27ff' },
+    { id: 'reddit', label: 'Reddit Command', icon: '\u2634' },
+    { id: 'schema_engine', label: 'Schema Engine', icon: '\u232c' },
+    { id: 'aio', label: 'AI Overview', icon: '\u25c8' },
+    { id: 'metadata_studio', label: 'Metadata Studio', icon: '\u25a7' },
+    { id: 'authority', label: 'Authority Score', icon: '\u2605' },
+    { id: 'youtube', label: 'YouTube GEO', icon: '\u25b6' },
+  ]},
   { section: 'Administration', items: [
     { id: 'workspaces', label: 'Workspaces', icon: '\u2302' },
     { id: 'users', label: 'Team', icon: '\u263A' },
@@ -3825,6 +3838,775 @@ function MonitoringPage({ state }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// GEO CONQUEST — 11 engines
+// ═══════════════════════════════════════════════════════════════
+
+// 1. Prompt Battlefield
+function PromptBattlefieldPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [bf, setBf] = useState(null);
+  const [prompts, setPrompts] = useState([]);
+  const [filterStage, setFilterStage] = useState('');
+  const [newText, setNewText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [tracking, setTracking] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/prompts/${wsId}/battlefield`, {}, token).then(r => setBf(r.data || r)).catch(() => {});
+    api(`/api/prompts/${wsId}${filterStage ? '?stage=' + filterStage : ''}`, {}, token)
+      .then(r => setPrompts(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId, filterStage]);
+
+  const addPrompt = async () => {
+    if (!newText.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/prompts/${wsId}`, { method: 'POST', body: JSON.stringify({ text: newText }) }, token);
+      setNewText(''); setMsg('Prompt added.'); load();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+    setBusy(false);
+  };
+  const trackAll = async () => {
+    setTracking(true); setMsg('');
+    try {
+      const r = await api(`/api/prompts/${wsId}/track`, { method: 'POST', body: JSON.stringify({}) }, token);
+      const d = r.data || r;
+      setMsg(`Tracked ${d.tracked} prompts; our brand surfaced in ${d.with_our_brand}.`);
+      load();
+    } catch (e) { setMsg('Track failed: ' + e.message); }
+    setTracking(false);
+  };
+
+  const stageColor = { decision: 'rose', trust: 'amber', comparison: 'purple', objection: 'blue', solution: 'emerald', problem: 'blue', awareness: 'gray' };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Prompt Battlefield — what AI says about you</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          The real GEO battlefield. Each prompt = one question AI answers. Win the ones with revenue intent.
+        </p>
+        {bf && (
+          <div className="metrics-grid" style={{ marginTop: 8 }}>
+            <div className="metric-card"><div className="metric-label">HIGH-VALUE PROMPTS</div><div className="metric-value">{bf.high_value_prompts || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">OWNED</div><div className="metric-value" style={{ color: 'var(--emerald)' }}>{bf.owned || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">LOST</div><div className="metric-value" style={{ color: 'var(--rose)' }}>{bf.lost || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">EMERGING</div><div className="metric-value" style={{ color: 'var(--amber)' }}>{bf.emerging || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">€ AT STAKE</div><div className="metric-value">€{Math.round((bf.estimated_revenue_at_stake_eur || 0)).toLocaleString()}</div></div>
+          </div>
+        )}
+        {bf?.top_dominators?.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Top dominators</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {bf.top_dominators.map(d => (
+                <span key={d.domain} className="badge rose">{d.domain} · {d.lost_prompts} lost</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Prompts ({prompts.length})</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select className="form-input" style={{ width: 'auto', fontSize: 11 }} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+              <option value="">All stages</option>
+              {['awareness','problem','solution','comparison','trust','objection','decision'].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button className="btn btn-sm btn-primary" onClick={trackAll} disabled={tracking}>{tracking ? 'Tracking...' : 'Track All (high-value)'}</button>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder='Add a prompt: e.g. "best private orthopedic surgeon Budapest"'
+            value={newText} onChange={e => setNewText(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={addPrompt} disabled={busy}>{busy ? 'Adding...' : 'Add Prompt'}</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: 'var(--emerald)', marginBottom: 6 }}>{msg}</div>}
+        {prompts.length === 0 ? (
+          <div className="empty-state">⚑<br/>No prompts yet. Add the questions you want AI to recommend you for.</div>
+        ) : (
+          <table className="data-table"><thead><tr>
+            <th>Prompt</th><th>Type</th><th>Stage</th><th>Revenue</th><th>Status</th>
+          </tr></thead><tbody>{prompts.slice(0, 200).map(p => (
+            <tr key={p.id}>
+              <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.text}</td>
+              <td><span className="badge">{p.prompt_type}</span></td>
+              <td><span className={`badge ${stageColor[p.buyer_stage] || 'gray'}`}>{p.buyer_stage}</span></td>
+              <td style={{ fontWeight: 600, color: p.revenue_score >= 70 ? 'var(--emerald)' : p.revenue_score >= 40 ? 'var(--amber)' : 'var(--text-muted)' }}>{Math.round(p.revenue_score || 0)}</td>
+              <td><span className="badge">{p.status}</span></td>
+            </tr>
+          ))}</tbody></table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 2. Citation Intelligence
+function CitationIntelPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [diags, setDiags] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/intel/diagnostics/${wsId}`, {}, token).then(r => setDiags(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const runWorkspace = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/intel/diagnose/${wsId}?top_n=8`, { method: 'POST' }, token);
+      setMsg(`Ran ${r.data?.diagnosed || 0} diagnoses.`); load();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Citation Intelligence — why are we losing</span>
+          <button className="btn btn-sm btn-primary" onClick={runWorkspace} disabled={busy}>{busy ? 'Diagnosing...' : 'Diagnose Top 8 Losses'}</button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          For every prompt where a competitor outranks us, we scrape their winning page and ask Claude WHY AI cites them. Diagnosis + actions persist below.
+        </p>
+        {msg && <div style={{ fontSize: 11, color: 'var(--emerald)' }}>{msg}</div>}
+      </div>
+      {diags.length === 0 ? (
+        <div className="empty-state">◎<br/>No diagnostics yet. Run the diagnosis above.</div>
+      ) : diags.map(d => (
+        <div key={d.id} className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>{d.competitor_domain} <span className="badge">{d.analyzed_url ? new URL(d.analyzed_url).pathname.slice(0, 40) : ''}</span></span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{new Date(d.analyzed_at).toLocaleDateString()}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, marginBottom: 10 }}>
+            {['content','schema','authority','reddit','youtube','entity'].map(k => {
+              const v = d[`${k}_score`] || 0;
+              return (
+                <div key={k} className="card" style={{ padding: 8, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{k}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: v >= 70 ? 'var(--rose)' : v >= 40 ? 'var(--amber)' : 'var(--emerald)' }}>{Math.round(v)}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>{d.diagnosis}</div>
+          {(() => { try {
+            const acts = typeof d.actions === 'string' ? JSON.parse(d.actions) : (d.actions || []);
+            return acts.length ? (
+              <ol style={{ fontSize: 12, paddingLeft: 18, color: 'var(--text-secondary)' }}>
+                {acts.map((a, i) => (
+                  <li key={i} style={{ marginBottom: 4 }}>
+                    <span className={`badge ${a.priority === 'high' ? 'rose' : a.priority === 'medium' ? 'amber' : 'gray'}`}>{a.priority}</span>{' '}{a.step} {a.impact && <span style={{ color: 'var(--text-muted)' }}>→ {a.impact}</span>}
+                  </li>
+                ))}
+              </ol>
+            ) : null;
+          } catch { return null; }})()}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 3. Attack Map
+function AttackMapPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [rows, setRows] = useState([]);
+  const [movements, setMovements] = useState([]);
+  const [domain, setDomain] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/attack-map/${wsId}`, {}, token).then(r => setRows(r.data || [])).catch(() => {});
+    api(`/api/attack-map/${wsId}/movements?days=14`, {}, token).then(r => setMovements(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const analyze = async () => {
+    if (!domain.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/attack-map/${wsId}/analyze`, { method: 'POST', body: JSON.stringify({ competitor_domain: domain }) }, token);
+      setDomain(''); load();
+    } catch (e) { /* surface inline */ }
+    setBusy(false);
+  };
+
+  const AXES = ['schema','reddit','youtube','faq_depth','decision_support','review','entity_consistency','pr','local_authority'];
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">GEO Attack Map — find the open flank</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="competitor domain (e.g. medicover.hu)" value={domain} onChange={e => setDomain(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={analyze} disabled={busy}>{busy ? 'Analyzing...' : 'Analyze Competitor'}</button>
+        </div>
+      </div>
+
+      {rows.length > 0 && (
+        <div className="card">
+          <div className="card-header">Capability matrix</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table">
+              <thead><tr>
+                <th>Competitor</th>{AXES.map(a => <th key={a} style={{ fontSize: 10 }}>{a}</th>)}<th>Overall</th><th>Weakest</th>
+              </tr></thead>
+              <tbody>{rows.map(r => (
+                <tr key={r.competitor_domain}>
+                  <td style={{ fontWeight: 600 }}>{r.competitor_domain}</td>
+                  {AXES.map(a => {
+                    const v = r[`${a}_score`] || 0;
+                    return <td key={a} style={{ background: `linear-gradient(90deg, rgba(${v >= 60 ? '244,63,94' : v >= 30 ? '245,158,11' : '16,185,129'},0.2) ${v}%, transparent ${v}%)`, fontWeight: 600 }}>{Math.round(v)}</td>;
+                  })}
+                  <td style={{ fontWeight: 700 }}>{Math.round(r.overall_strength || 0)}</td>
+                  <td><span className="badge emerald">{r.weakest_axis} ({Math.round(r.weakest_axis_score || 0)})</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {movements.length > 0 && (
+        <div className="card">
+          <div className="card-header">Movements (last 14 days)</div>
+          {movements.slice(0, 12).map(m => (
+            <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+              <span>{m.competitor_domain} · {m.axis}</span>
+              <span style={{ color: m.delta_vs_prev > 0 ? 'var(--rose)' : 'var(--emerald)' }}>{m.delta_vs_prev > 0 ? '+' : ''}{Math.round(m.delta_vs_prev)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 4. Revenue Priority
+function RevenuePriorityPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [summary, setSummary] = useState(null);
+  const [recs, setRecs] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/revenue/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => {});
+    api(`/api/revenue/${wsId}/priority?top_n=15`, {}, token).then(r => setRecs(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const push = async () => {
+    setBusy(true);
+    try { await api(`/api/revenue/${wsId}/push-recs?top_n=5`, { method: 'POST' }, token); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Revenue Priority — money over volume</div>
+        {summary && (
+          <div className="metrics-grid">
+            <div className="metric-card"><div className="metric-label">€ PIPELINE AT STAKE</div><div className="metric-value">€{Math.round(summary.estimated_pipeline_eur || 0).toLocaleString()}</div></div>
+            <div className="metric-card"><div className="metric-label">€ WON</div><div className="metric-value" style={{ color: 'var(--emerald)' }}>€{Math.round(summary.won_eur || 0).toLocaleString()}</div></div>
+            <div className="metric-card"><div className="metric-label">€ LOST</div><div className="metric-value" style={{ color: 'var(--rose)' }}>€{Math.round(summary.lost_eur || 0).toLocaleString()}</div></div>
+            <div className="metric-card"><div className="metric-label">PROMPTS WON</div><div className="metric-value">{summary.won_count || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">PROMPTS LOST</div><div className="metric-value">{summary.lost_count || 0}</div></div>
+          </div>
+        )}
+        <button className="btn btn-primary" onClick={push} disabled={busy} style={{ marginTop: 8 }}>
+          {busy ? 'Pushing...' : 'Push top 5 to Recommendations'}
+        </button>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Do This Next — by revenue × ownership gap</div>
+        {recs.length === 0 ? <div className="empty-state">€<br/>No prompts yet.</div> : recs.map((r, i) => (
+          <div key={r.prompt_id} style={{ padding: 10, borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ fontWeight: 600 }}>{i + 1}. {r.text}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>€{Math.round(r.estimated_value_eur).toLocaleString()}</div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>
+              <span className="badge">{r.buyer_stage}</span> our: {Math.round(r.our_score)}/100 · leader: {r.leader_domain || '—'} · priority: {Math.round(r.priority)}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>→ {r.next_action}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 5. Buyer Journey
+function BuyerJourneyPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/journey/${wsId}?refresh=false`, {}, token).then(r => setData(r.data || r)).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const refresh = async () => {
+    setBusy(true);
+    try { const r = await api(`/api/journey/${wsId}?refresh=true`, {}, token); setData(r.data || r); } catch {}
+    setBusy(false);
+  };
+
+  const STAGES = ['awareness','problem','solution','comparison','trust','objection','decision'];
+  const sevColor = { critical: 'rose', medium: 'amber', low: 'amber', none: 'emerald' };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Buyer Journey Coverage Map</span>
+          <button className="btn btn-sm btn-primary" onClick={refresh} disabled={busy}>{busy ? 'Re-classifying...' : 'Refresh'}</button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Audit your content by decision stage. Money is in the last three stages.</p>
+        {data && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6, marginTop: 8 }}>
+            {STAGES.map(s => {
+              const x = (data.stages || {})[s] || {};
+              const cov = x.coverage_score || 0;
+              return (
+                <div key={s} className="card" style={{ padding: 10, textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{s}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: cov >= 60 ? 'var(--emerald)' : cov >= 30 ? 'var(--amber)' : 'var(--rose)' }}>{Math.round(cov)}</div>
+                  <div style={{ fontSize: 10 }}>{x.page_count || 0} pages</div>
+                  <div style={{ marginTop: 4 }}><span className={`badge ${sevColor[x.gap_severity] || 'gray'}`}>{x.gap_severity || 'none'}</span></div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {data && Object.entries(data.stages || {}).map(([s, x]) => (
+        <div key={s} className="card">
+          <div className="card-header">{s} <span className="badge">{x.page_count} pages · {x.prompt_count} prompts</span></div>
+          <div style={{ fontSize: 13 }}>{x.recommendation}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 6. Reddit Command Center
+function RedditCommandPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [cc, setCc] = useState(null);
+  const [intel, setIntel] = useState([]);
+  const [onlyGaps, setOnlyGaps] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/reddit/${wsId}/command-center`, {}, token).then(r => setCc(r.data || r)).catch(() => {});
+    api(`/api/reddit/${wsId}?only_gaps=${onlyGaps}`, {}, token).then(r => setIntel(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId, onlyGaps]);
+
+  const harvest = async () => {
+    setBusy(true);
+    try { await api(`/api/reddit/${wsId}/harvest`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Reddit Command Center</span>
+          <button className="btn btn-sm btn-primary" onClick={harvest} disabled={busy}>{busy ? 'Harvesting...' : 'Harvest Reddit Citations'}</button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>AI weighs Reddit as authority. Find threads where competitors are mentioned and you are not.</p>
+        {cc && (
+          <div className="metrics-grid" style={{ marginTop: 8 }}>
+            <div className="metric-card"><div className="metric-label">THREADS TRACKED</div><div className="metric-value">{cc.thread_count || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">SUBREDDITS</div><div className="metric-value">{Object.keys(cc.subreddits || {}).length}</div></div>
+            <div className="metric-card"><div className="metric-label">OPPORTUNITY GAPS</div><div className="metric-value" style={{ color: 'var(--rose)' }}>{cc.opportunity_gaps?.length || 0}</div></div>
+          </div>
+        )}
+      </div>
+
+      {cc?.top_brands?.length > 0 && (
+        <div className="card">
+          <div className="card-header">Top brands across Reddit</div>
+          {cc.top_brands.map(b => (
+            <div key={b.brand} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12 }}>
+              <span>{b.brand}</span><span className="badge">{b.mentions}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Threads ({intel.length})</span>
+          <label style={{ fontSize: 12 }}><input type="checkbox" checked={onlyGaps} onChange={e => setOnlyGaps(e.target.checked)} /> only opportunity gaps</label>
+        </div>
+        {intel.length === 0 ? <div className="empty-state">☴<br/>No Reddit data yet. Harvest first.</div> : intel.map(r => (
+          <div key={r.id} style={{ padding: 8, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+              <span className="badge purple">r/{r.subreddit}</span>
+              <span className="badge">{r.discussion_type}</span>
+              {r.is_opportunity_gap ? <span className="badge rose">gap</span> : <span className="badge emerald">we are present</span>}
+              {r.sentiment_label && <span className={`badge ${r.sentiment_label === 'positive' ? 'emerald' : r.sentiment_label === 'negative' ? 'rose' : 'gray'}`}>{r.sentiment_label}</span>}
+            </div>
+            <div style={{ fontWeight: 600 }}>{r.thread_title || r.thread_url}</div>
+            <a href={r.thread_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: 'var(--blue)', wordBreak: 'break-all' }}>{r.thread_url}</a>
+            <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>→ {r.suggested_action}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 7. Schema Engine
+function SchemaEnginePage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [audits, setAudits] = useState([]);
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/schema/${wsId}`, {}, token).then(r => setAudits(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const auditOne = async () => {
+    if (!url.trim()) return;
+    setBusy(true);
+    try { await api(`/api/schema/${wsId}/audit`, { method: 'POST', body: JSON.stringify({ url }) }, token); setUrl(''); load(); } catch {}
+    setBusy(false);
+  };
+  const auditWs = async () => {
+    setBusy(true);
+    try { await api(`/api/schema/${wsId}/audit-workspace?top_n=10`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Schema Opportunity Engine — diagnosis, not generator</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="https://example.com/page-to-audit" value={url} onChange={e => setUrl(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={auditOne} disabled={busy}>Audit URL</button>
+          <button className="btn" onClick={auditWs} disabled={busy}>Audit top workspace pages</button>
+        </div>
+      </div>
+      {audits.length === 0 ? <div className="empty-state">⌬<br/>No audits yet.</div> : audits.map(a => {
+        let types = []; let missing = []; let recs = [];
+        try { types = typeof a.schema_types === 'string' ? JSON.parse(a.schema_types) : (a.schema_types || []); } catch {}
+        try { missing = typeof a.missing_critical === 'string' ? JSON.parse(a.missing_critical) : (a.missing_critical || []); } catch {}
+        try { recs = typeof a.recommendations === 'string' ? JSON.parse(a.recommendations) : (a.recommendations || []); } catch {}
+        return (
+          <div key={a.id} className="card">
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{a.page_url}</span>
+              <span>Depth {Math.round(a.schema_depth_score || 0)}/100 {a.is_competitor ? <span className="badge rose">competitor</span> : <span className="badge emerald">us</span>}</span>
+            </div>
+            <div style={{ fontSize: 11, marginBottom: 6 }}>Present: {types.length ? types.map(t => <span key={t} className="badge emerald" style={{ marginRight: 4 }}>{t}</span>) : '—'}</div>
+            <div style={{ fontSize: 11, marginBottom: 6 }}>Missing: {missing.slice(0, 8).map(m => <span key={m.type} className={`badge ${m.severity === 'high' ? 'rose' : m.severity === 'medium' ? 'amber' : 'gray'}`} style={{ marginRight: 4 }} title={m.why_it_hurts}>{m.type}</span>)}</div>
+            {a.diagnosis && <div style={{ fontSize: 13, marginBottom: 6 }}>{a.diagnosis}</div>}
+            {recs.length > 0 && (
+              <ol style={{ fontSize: 12, paddingLeft: 18, color: 'var(--text-secondary)' }}>
+                {recs.map((r, i) => <li key={i}>{r.step || JSON.stringify(r)}</li>)}
+              </ol>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 8. AIO Overview
+function AioOverviewPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [ov, setOv] = useState(null);
+  const [losses, setLosses] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/aio/${wsId}`, {}, token).then(r => setOv(r.data || r)).catch(() => {});
+    api(`/api/aio/${wsId}/losses?limit=50`, {}, token).then(r => setLosses(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const detect = async () => {
+    setBusy(true);
+    try { await api(`/api/aio/${wsId}/detect-movements`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Google AI Overview Tracker</span>
+          <button className="btn btn-sm btn-primary" onClick={detect} disabled={busy}>Detect Movements</button>
+        </div>
+        {ov && (
+          <div className="metrics-grid" style={{ marginTop: 8 }}>
+            <div className="metric-card"><div className="metric-label">PROMPTS TRACKED</div><div className="metric-value">{ov.tracked_prompts || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">WITH AIO</div><div className="metric-value">{ov.with_aio || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">US IN AIO</div><div className="metric-value" style={{ color: 'var(--emerald)' }}>{ov.with_our_brand || 0}</div></div>
+            <div className="metric-card"><div className="metric-label">WITHOUT US</div><div className="metric-value" style={{ color: 'var(--rose)' }}>{ov.without_us || 0}</div></div>
+          </div>
+        )}
+      </div>
+
+      {ov?.top_publishers?.length > 0 && (
+        <div className="card"><div className="card-header">Dominant publishers</div>
+          {ov.top_publishers.map(p => <div key={p.domain} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12 }}><span>{p.domain}</span><span className="badge">{p.appearances}</span></div>)}
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-header">Losses — AIO present, our brand absent</div>
+        {losses.length === 0 ? <div className="empty-state">◈<br/>No losses logged.</div> : losses.map(l => (
+          <div key={l.id} style={{ padding: 8, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+            <div style={{ fontWeight: 600 }}>{l.prompt_text}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(l.observed_at).toLocaleString()} · stage {l.buyer_stage} · revenue {Math.round(l.revenue_score || 0)}</div>
+            {l.delta_vs_prev && <div style={{ color: 'var(--amber)' }}>{l.delta_vs_prev}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 9. Metadata Studio
+function MetadataStudioPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [pkgs, setPkgs] = useState([]);
+  const [url, setUrl] = useState('');
+  const [audit, setAudit] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/metadata/${wsId}`, {}, token).then(r => setPkgs(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const run = async () => {
+    if (!url.trim()) return;
+    setBusy(true);
+    try { await api(`/api/metadata/${wsId}/url`, { method: 'POST', body: JSON.stringify({ url, audit }) }, token); setUrl(''); load(); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Metadata + Snippet Studio</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="https://example.com/page" value={url} onChange={e => setUrl(e.target.value)} style={{ flex: 1 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}><input type="checkbox" checked={audit} onChange={e => setAudit(e.target.checked)} /> audit existing</label>
+          <button className="btn btn-primary" onClick={run} disabled={busy}>{audit ? 'Audit' : 'Generate'}</button>
+        </div>
+      </div>
+      {pkgs.length === 0 ? <div className="empty-state">▧<br/>No metadata packages yet.</div> : pkgs.map(p => (
+        <div key={p.id} className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{p.page_url || p.draft_id}</span>
+            <span>AIO score {Math.round(p.aio_compatibility_score || 0)}/100</span>
+          </div>
+          <div style={{ fontSize: 12, marginBottom: 4 }}><b>Title:</b> {p.seo_title}</div>
+          <div style={{ fontSize: 12, marginBottom: 4 }}><b>Meta:</b> {p.meta_description}</div>
+          <div style={{ fontSize: 12, marginBottom: 4 }}><b>Snippet target:</b> {p.snippet_target}</div>
+          {(() => {
+            try {
+              const faqs = typeof p.faq_extractions === 'string' ? JSON.parse(p.faq_extractions) : (p.faq_extractions || []);
+              return faqs.length ? <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}><b>FAQs:</b> {faqs.map(f => f.q).join(' · ')}</div> : null;
+            } catch { return null; }
+          })()}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 10. Authority Score
+function AuthorityScorePage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [latest, setLatest] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/authority/${wsId}/latest`, {}, token).then(r => setLatest((r.data || r).scores || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const rebuild = async () => {
+    setBusy(true);
+    try { await api(`/api/authority/${wsId}/rebuild`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+  const compute = async () => {
+    setBusy(true);
+    try { await api(`/api/authority/${wsId}/compute`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
+  const SUBS = ['citation_score','prompt_ownership_score','schema_score','offsite_score','reddit_score','entity_score','local_score'];
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>GEO Authority Score™</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-sm btn-primary" onClick={compute} disabled={busy}>Compute Us</button>
+            <button className="btn btn-sm" onClick={rebuild} disabled={busy}>Rebuild All (incl. competitors)</button>
+          </div>
+        </div>
+      </div>
+      {latest.length === 0 ? <div className="empty-state">★<br/>No score yet. Click Compute.</div> : latest.map(s => (
+        <div key={s.id} className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>{s.subject_domain} {s.is_us ? <span className="badge emerald">us</span> : <span className="badge gray">competitor</span>}</span>
+            <span style={{ fontSize: 24, fontWeight: 700, color: s.total_score >= 70 ? 'var(--emerald)' : s.total_score >= 40 ? 'var(--amber)' : 'var(--rose)' }}>{Math.round(s.total_score)}/100</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
+            {SUBS.map(k => {
+              const v = s[k] || 0;
+              return (
+                <div key={k} style={{ padding: 8, background: 'var(--bg-subtle)', borderRadius: 4, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{k.replace('_score','').replace(/_/g, ' ')}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: v >= 60 ? 'var(--emerald)' : v >= 30 ? 'var(--amber)' : 'var(--rose)' }}>{Math.round(v)}</div>
+                </div>
+              );
+            })}
+          </div>
+          {s.rationale && (() => {
+            try {
+              const r = typeof s.rationale === 'string' ? JSON.parse(s.rationale) : s.rationale;
+              return <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-secondary)' }}>Biggest lever: <b>{r.biggest_lever}</b> — {r.summary}</div>;
+            } catch { return null; }
+          })()}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 11. YouTube GEO
+function YouTubeGeoPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [assets, setAssets] = useState([]);
+  const [topic, setTopic] = useState('');
+  const [expert, setExpert] = useState('');
+  const [service, setService] = useState('');
+  const [goal, setGoal] = useState('trust');
+  const [auditUrl, setAuditUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/youtube/${wsId}`, {}, token).then(r => setAssets(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const generate = async () => {
+    if (!topic.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/youtube/${wsId}/generate`, { method: 'POST', body: JSON.stringify({ topic, expert_name: expert, connected_service: service, goal }) }, token);
+      setTopic(''); load();
+    } catch {}
+    setBusy(false);
+  };
+  const audit = async () => {
+    if (!auditUrl.trim()) return;
+    setBusy(true);
+    try { await api(`/api/youtube/${wsId}/audit`, { method: 'POST', body: JSON.stringify({ video_url: auditUrl, goal }) }, token); setAuditUrl(''); load(); } catch {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">YouTube GEO Optimizer</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Engineer videos as AI authority assets — title, description, chapters, FAQs, embed strategy, VideoObject schema.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 6 }}>
+          <input className="form-input" placeholder="Topic" value={topic} onChange={e => setTopic(e.target.value)} />
+          <input className="form-input" placeholder="Expert name" value={expert} onChange={e => setExpert(e.target.value)} />
+          <input className="form-input" placeholder="Connected service" value={service} onChange={e => setService(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <select className="form-input" style={{ width: 'auto', fontSize: 11 }} value={goal} onChange={e => setGoal(e.target.value)}>
+            {['trust','lead-gen','FAQ','comparison'].map(g => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <button className="btn btn-primary" onClick={generate} disabled={busy}>Generate Package</button>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <input className="form-input" placeholder="Audit existing https://youtube.com/..." value={auditUrl} onChange={e => setAuditUrl(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn" onClick={audit} disabled={busy}>Audit existing</button>
+        </div>
+      </div>
+      {assets.length === 0 ? <div className="empty-state">▶<br/>No assets yet.</div> : assets.map(a => (
+        <div key={a.id} className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>{a.optimized_title || a.topic}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.goal} · {new Date(a.generated_at).toLocaleDateString()}</span>
+          </div>
+          {a.video_url && <div style={{ fontSize: 11, color: 'var(--blue)', marginBottom: 6 }}>{a.video_url}</div>}
+          <div style={{ fontSize: 12, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{a.description}</div>
+          {(() => {
+            try {
+              const ch = typeof a.chapters === 'string' ? JSON.parse(a.chapters) : (a.chapters || []);
+              return ch.length ? (
+                <div style={{ fontSize: 11, marginBottom: 6 }}>
+                  <b>Chapters:</b><br/>
+                  {ch.map((c, i) => <div key={i} style={{ fontFamily: 'var(--font-mono)' }}>{c.ts} {c.title}</div>)}
+                </div>
+              ) : null;
+            } catch { return null; }
+          })()}
+          {a.embed_strategy && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}><b>Embed:</b> {a.embed_strategy}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 
@@ -3898,6 +4680,17 @@ function App() {
     automations: AutomationsPage,
     prompts: PromptTemplatesPage,
     monitoring: MonitoringPage,
+    battlefield: PromptBattlefieldPage,
+    citation_intel: CitationIntelPage,
+    attack_map: AttackMapPage,
+    revenue: RevenuePriorityPage,
+    journey: BuyerJourneyPage,
+    reddit: RedditCommandPage,
+    schema_engine: SchemaEnginePage,
+    aio: AioOverviewPage,
+    metadata_studio: MetadataStudioPage,
+    authority: AuthorityScorePage,
+    youtube: YouTubeGeoPage,
   };
 
   const ViewComponent = viewMap[state.view] || OverviewPage;
