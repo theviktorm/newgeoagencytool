@@ -198,18 +198,30 @@ except Exception as _e:
 # Resolve frontend dir: sibling of the backend/ package
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+# No-cache headers prevent the frontend going stale across deploys. We
+# hash-bust dashboard.jsx via a version query string in index.html, but
+# also tell the browser + any CDN to never reuse a cached copy beyond
+# revalidation. Pinning to no-cache lets each deploy ship instantly.
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/")
 async def root():
     index = _FRONTEND_DIR / "index.html"
     if index.exists():
-        return FileResponse(index, media_type="text/html")
+        return FileResponse(index, media_type="text/html", headers=_NO_CACHE_HEADERS)
     return {"status": "ok", "service": "Momentus AI API", "version": "1.0.0"}
 
 @app.get("/dashboard.jsx")
 async def serve_dashboard_jsx():
     jsx = _FRONTEND_DIR / "dashboard.jsx"
     if jsx.exists():
-        return FileResponse(jsx, media_type="application/javascript")
+        return FileResponse(jsx, media_type="application/javascript",
+                            headers=_NO_CACHE_HEADERS)
     raise HTTPException(404, "dashboard.jsx not found")
 
 @app.get("/api/health")
