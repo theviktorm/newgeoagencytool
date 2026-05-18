@@ -24,7 +24,7 @@ const initialState = {
   token: null,
   workspaces: [],
   activeWorkspace: null,
-  view: 'overview',
+  view: 'warroom',
   overview: null,
   performance: null,
   deltas: null,
@@ -229,53 +229,41 @@ function LoginScreen({ onLogin }) {
 // ═══════════════════════════════════════════════════════════════
 
 const NAV_ITEMS = [
-  { section: 'Analytics', items: [
-    { id: 'overview', label: 'Overview', icon: '\u25A3' },
-    { id: 'performance', label: 'Performance', icon: '\u2191' },
-    { id: 'deltas', label: 'Content Deltas', icon: '\u0394' },
-    { id: 'models', label: 'Model Breakdown', icon: '\u2630' },
+  // \u2500\u2500 War Room is the new landing page \u2500\u2500
+  { section: 'War Room', items: [
+    { id: 'warroom', label: 'Live War Room', icon: '\u25ce' },
+    { id: 'battlefield', label: 'Prompt Battlefield', icon: '\u2691' },
+    { id: 'revenue', label: 'Revenue Priority', icon: '\u20AC' },
+    { id: 'authority', label: 'Authority Score', icon: '\u2605' },
   ]},
-  { section: 'Pipeline', items: [
-    { id: 'import', label: 'Data Import', icon: '\u21E9' },
-    { id: 'sources', label: 'Sources', icon: '\u25C9' },
-    { id: 'scraper', label: 'Scraper', icon: '\u2692' },
-    { id: 'analysis', label: 'Analysis', icon: '\u2B21' },
+  { section: 'Intelligence', items: [
+    { id: 'citation_intel', label: 'Citation Intel', icon: '\u25ce' },
+    { id: 'attack_map', label: 'Attack Map', icon: '\u2694' },
+    { id: 'graph', label: 'Authority Graph', icon: '\u2042' },
+    { id: 'journey', label: 'Buyer Journey', icon: '\u27ff' },
+    { id: 'aio', label: 'AI Overview', icon: '\u25c8' },
+  ]},
+  { section: 'Action', items: [
+    { id: 'reddit', label: 'Reddit Command', icon: '\u2634' },
+    { id: 'schema_engine', label: 'Schema Engine', icon: '\u232c' },
+    { id: 'metadata_studio', label: 'Metadata Studio', icon: '\u25a7' },
+    { id: 'youtube', label: 'YouTube GEO', icon: '\u25b6' },
     { id: 'content', label: 'Content Studio', icon: '\u270E' },
     { id: 'publishing', label: 'Publishing', icon: '\u21EA' },
   ]},
-  { section: 'Operations', items: [
-    { id: 'pipeline', label: 'Pipeline Activity', icon: '\u25B6' },
-    { id: 'tasks', label: 'Task Board', icon: '\u2611' },
-    { id: 'campaigns', label: 'Campaigns', icon: '\u2691' },
-    { id: 'reports', label: 'Reports', icon: '\u2637' },
-    { id: 'playbooks', label: 'Playbooks', icon: '\u2263' },
+  { section: 'Ops', items: [
+    { id: 'import', label: 'Data Import', icon: '\u21E9' },
+    { id: 'sources', label: 'Sources', icon: '\u25C9' },
+    { id: 'analysis', label: 'Cluster Analysis', icon: '\u2B21' },
+    { id: 'brands', label: 'Brand Manager', icon: '\u24B7' },
+    { id: 'alerts', label: 'Alerts', icon: '\u26A0' },
+    { id: 'report', label: 'Comparative Report', icon: '\u2637' },
+    { id: 'jobs', label: 'Job Queue', icon: '\u21BB' },
   ]},
-  { section: 'Intelligence', items: [
-    { id: 'competitors', label: 'Competitors', icon: '\u2694' },
-    { id: 'recommendations', label: 'Recommendations', icon: '\u2605' },
-    { id: 'onboarding', label: 'Onboarding', icon: '\u2714' },
-  ]},
-  { section: 'GEO Conquest', items: [
-    { id: 'battlefield', label: 'Prompt Battlefield', icon: '\u2691' },
-    { id: 'citation_intel', label: 'Citation Intel', icon: '\u25ce' },
-    { id: 'attack_map', label: 'Attack Map', icon: '\u2694' },
-    { id: 'revenue', label: 'Revenue Priority', icon: '\u20ac' },
-    { id: 'journey', label: 'Buyer Journey', icon: '\u27ff' },
-    { id: 'reddit', label: 'Reddit Command', icon: '\u2634' },
-    { id: 'schema_engine', label: 'Schema Engine', icon: '\u232c' },
-    { id: 'aio', label: 'AI Overview', icon: '\u25c8' },
-    { id: 'metadata_studio', label: 'Metadata Studio', icon: '\u25a7' },
-    { id: 'authority', label: 'Authority Score', icon: '\u2605' },
-    { id: 'youtube', label: 'YouTube GEO', icon: '\u25b6' },
-  ]},
-  { section: 'Administration', items: [
+  { section: 'Admin', items: [
     { id: 'workspaces', label: 'Workspaces', icon: '\u2302' },
     { id: 'users', label: 'Team', icon: '\u263A' },
-    { id: 'billing', label: 'Billing', icon: '\u20AC' },
-    { id: 'jobs', label: 'Job Queue', icon: '\u21BB' },
-    { id: 'automations', label: 'Automations', icon: '\u26A1' },
-    { id: 'prompts', label: 'Prompts', icon: '\u2756' },
-    { id: 'monitoring', label: 'Monitoring', icon: '\u2261' },
+    { id: 'competitors', label: 'Competitors', icon: '\u2694' },
     { id: 'audit', label: 'Audit Log', icon: '\u2318' },
     { id: 'settings', label: 'Settings', icon: '\u2699' },
   ]},
@@ -4834,6 +4822,444 @@ function YouTubeGeoPage({ state }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// WAR ROOM — live landing
+// ═══════════════════════════════════════════════════════════════
+
+function WarRoomPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [bf, setBf] = useState(null);
+  const [rev, setRev] = useState(null);
+  const [auth, setAuth] = useState([]);
+  const [recent, setRecent] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/prompts/${wsId}/battlefield`, {}, token).then(r => setBf(r.data || r)).catch(() => {});
+    api(`/api/revenue/${wsId}/summary`, {}, token).then(r => setRev(r.data || r)).catch(() => {});
+    api(`/api/authority/${wsId}/latest`, {}, token).then(r => setAuth((r.data || r).scores || [])).catch(() => {});
+    api(`/api/alerts/${wsId}/events?limit=15`, {}, token).then(r => setRecent(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+  useEffect(() => {
+    if (!wsId) return;
+    const t = setInterval(load, 15000);  // live-ish refresh every 15s
+    return () => clearInterval(t);
+  }, [wsId]);
+
+  const runEval = async () => {
+    setBusy(true);
+    try { await api(`/api/alerts/${wsId}/evaluate`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
+  const us = auth.find(s => s.is_us) || auth[0];
+  const totalScore = us ? Math.round(us.total_score || 0) : null;
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card" style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(16,185,129,0.04))' }}>
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 18, fontWeight: 700 }}>Live GEO War Room</span>
+          <button className="btn btn-sm" onClick={runEval} disabled={busy}>{busy ? 'Evaluating...' : 'Run Alert Sweep'}</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--emerald)' }}>
+            <div className="metric-label">AUTHORITY SCORE</div>
+            <div className="metric-value">{totalScore != null ? `${totalScore}/100` : '—'}</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{us?.subject_domain || 'not computed'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--blue)' }}>
+            <div className="metric-label">PROMPTS OWNED</div>
+            <div className="metric-value">{bf?.owned ?? '—'} <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>/ {bf?.high_value_prompts ?? 0}</span></div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--rose)' }}>
+            <div className="metric-label">PROMPTS LOST</div>
+            <div className="metric-value" style={{ color: 'var(--rose)' }}>{bf?.lost ?? '—'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--amber)' }}>
+            <div className="metric-label">€ PIPELINE AT STAKE</div>
+            <div className="metric-value">€{Math.round((rev?.estimated_pipeline_eur || 0)).toLocaleString()}</div>
+            <div style={{ fontSize: 10, color: 'var(--emerald)' }}>€{Math.round(rev?.won_eur || 0).toLocaleString()} won</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+        <div className="card">
+          <div className="card-header">Top dominators (high-value prompts)</div>
+          {(bf?.top_dominators || []).length === 0 ? (
+            <div className="empty-state">⚔<br/>No competitive pressure yet — import a Peec CSV.</div>
+          ) : (bf.top_dominators.map(d => (
+            <div key={d.domain} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <span style={{ fontWeight: 600 }}>{d.domain}</span>
+              <span><span className="badge rose">{d.lost_prompts} prompts lost</span></span>
+            </div>
+          )))}
+        </div>
+        <div className="card">
+          <div className="card-header">Recent alerts</div>
+          {recent.length === 0 ? (
+            <div className="empty-state" style={{ fontSize: 11 }}>⚠<br/>No alerts. Configure rules in Alerts.</div>
+          ) : (recent.slice(0, 8).map(a => (
+            <div key={a.id} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+              <div style={{ fontWeight: 600 }}>{a.title}</div>
+              <div style={{ color: 'var(--text-muted)' }}>{new Date(a.fired_at).toLocaleString()} · <span className={`badge ${a.severity === 'critical' ? 'rose' : a.severity === 'warning' ? 'amber' : 'gray'}`}>{a.severity}</span></div>
+            </div>
+          )))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AUTHORITY GRAPH viz
+// ═══════════════════════════════════════════════════════════════
+
+function AuthorityGraphPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [summary, setSummary] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/graph/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => {});
+    api(`/api/graph/${wsId}/json?top_n_nodes=80`, {}, token).then(r => setGraph(r.data || r)).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const rebuild = async () => {
+    setBusy(true); setMsg('');
+    try { const r = await api(`/api/graph/${wsId}/rebuild`, { method: 'POST' }, token); setMsg(`Built ${r.data?.nodes || 0} nodes / ${r.data?.edges || 0} edges.`); load(); }
+    catch (e) { setMsg('Rebuild failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const nodeColor = (type) => ({ brand: '#f43f5e', topic: '#3b82f6', prompt: '#10b981', model: '#a855f7', url: '#f59e0b', subreddit: '#06b6d4', doctor: '#ec4899' }[type] || '#94a3b8');
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Authority Graph — entities + edges</span>
+          <button className="btn btn-sm btn-primary" onClick={rebuild} disabled={busy}>{busy ? 'Rebuilding...' : 'Rebuild Graph'}</button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Brand → Topic → Prompt → Model → URL → Subreddit. Edges weighted by citation count. Powers explainable Authority Score.
+        </p>
+        {msg && <div style={{ fontSize: 11, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
+      </div>
+
+      {summary && (
+        <div className="card">
+          <div className="card-header">Summary</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Top brands by degree</div>
+              {(summary.top_brands || []).slice(0, 8).map(b => (
+                <div key={b.id || b.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11 }}>
+                  <span>{b.label}</span><span className="badge">{b.degree || 0}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Top topics</div>
+              {(summary.top_topics || []).slice(0, 8).map(t => (
+                <div key={t.id || t.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11 }}>
+                  <span>{t.label}</span><span className="badge">{t.degree || 0}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Isolated (opportunity)</div>
+              {(summary.isolated || []).slice(0, 8).map(n => (
+                <div key={n.id || n.label} style={{ padding: '3px 0', fontSize: 11 }}>{n.label}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {graph?.nodes?.length > 0 && (
+        <div className="card">
+          <div className="card-header">Force layout (top {graph.nodes.length} nodes / {graph.links?.length || 0} edges)</div>
+          <svg width="100%" height="500" style={{ background: 'var(--bg-subtle)', borderRadius: 6 }}>
+            {(graph.links || []).slice(0, 400).map((l, i) => {
+              // crude grid layout — no D3
+              const a = graph.nodes.findIndex(n => n.id === l.source);
+              const b = graph.nodes.findIndex(n => n.id === l.target);
+              if (a < 0 || b < 0) return null;
+              const cols = Math.ceil(Math.sqrt(graph.nodes.length));
+              const ax = 30 + (a % cols) * (1100 / cols);
+              const ay = 30 + Math.floor(a / cols) * 60;
+              const bx = 30 + (b % cols) * (1100 / cols);
+              const by = 30 + Math.floor(b / cols) * 60;
+              return <line key={i} x1={ax} y1={ay} x2={bx} y2={by} stroke="rgba(148,163,184,0.2)" strokeWidth={Math.min(2, (l.weight || 1) * 0.5)} />;
+            })}
+            {graph.nodes.map((n, i) => {
+              const cols = Math.ceil(Math.sqrt(graph.nodes.length));
+              const x = 30 + (i % cols) * (1100 / cols);
+              const y = 30 + Math.floor(i / cols) * 60;
+              return (
+                <g key={n.id}>
+                  <circle cx={x} cy={y} r={6} fill={nodeColor(n.node_type)} />
+                  <text x={x + 8} y={y + 3} fill="var(--text-secondary)" fontSize="9">{(n.label || '').slice(0, 16)}</text>
+                </g>
+              );
+            })}
+          </svg>
+          <div style={{ display: 'flex', gap: 12, fontSize: 11, marginTop: 8 }}>
+            {['brand','topic','prompt','model','url','subreddit','doctor'].map(t => (
+              <span key={t}><span style={{ display: 'inline-block', width: 10, height: 10, background: nodeColor(t), borderRadius: '50%', marginRight: 4 }}></span>{t}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BRAND MANAGER
+// ═══════════════════════════════════════════════════════════════
+
+function BrandManagerPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [brands, setBrands] = useState([]);
+  const [name, setName] = useState('');
+  const [domain, setDomain] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/brands/${wsId}`, {}, token).then(r => setBrands(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const addOrSetUs = async (asUs) => {
+    if (!name.trim()) return;
+    try {
+      if (asUs) {
+        await api(`/api/brands/${wsId}/set-canonical-for-us`, { method: 'POST', body: JSON.stringify({ name, domain }) }, token);
+      } else {
+        await api(`/api/brands/${wsId}/canonicalize`, { method: 'POST', body: JSON.stringify({ name }) }, token);
+      }
+      setName(''); setDomain(''); setMsg('Saved.'); load();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+  };
+
+  const mergeInto = async (keep, mergeId) => {
+    if (!confirm(`Merge brand ${mergeId} into ${keep.canonical_name}? Aliases will be reassigned.`)) return;
+    try { await api(`/api/brands/${wsId}/merge`, { method: 'POST', body: JSON.stringify({ keep_id: keep.id, merge_id: mergeId }) }, token); load(); } catch {}
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Brand Manager — canonicalize aliases</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>"Pasarét Klinika" vs "Pasaret Klinika" vs "pasarét klinika" should be ONE brand. Add yours below, then merge duplicates.</p>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="Brand name" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1 }} />
+          <input className="form-input" placeholder="domain (optional)" value={domain} onChange={e => setDomain(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn" onClick={() => addOrSetUs(false)}>Add Brand</button>
+          <button className="btn btn-primary" onClick={() => addOrSetUs(true)}>Mark as US</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: 'var(--emerald)' }}>{msg}</div>}
+      </div>
+      <div className="card">
+        <div className="card-header">All brands ({brands.length})</div>
+        {brands.length === 0 ? <div className="empty-state">Ⓑ<br/>No brands yet. Import a Peec CSV or add manually.</div> : (
+          <table className="data-table"><thead><tr>
+            <th>Canonical</th><th>Display</th><th>Domain</th><th>Aliases</th><th>Us?</th><th></th>
+          </tr></thead><tbody>{brands.map(b => (
+            <tr key={b.id}>
+              <td>{b.canonical_name}</td>
+              <td>{b.display_name || '—'}</td>
+              <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{b.domain || '—'}</td>
+              <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(b.aliases || []).length}</td>
+              <td>{b.is_us ? <span className="badge emerald">us</span> : '—'}</td>
+              <td><code style={{ fontSize: 10 }}>{b.id?.slice(0, 8)}</code></td>
+            </tr>
+          ))}</tbody></table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS — rule CRUD + recent events
+// ═══════════════════════════════════════════════════════════════
+
+const TRIGGERS = [
+  { id: 'ownership_drop', label: 'Ownership drop on a prompt', params: { min_revenue_score: 60, drop_delta: 0.10, window_hours: 168 } },
+  { id: 'authority_drop', label: 'Authority score drop', params: { drop_delta: 5, window_days: 7 } },
+  { id: 'competitor_aio_entry', label: 'New competitor in AIO', params: { min_revenue_score: 60 } },
+  { id: 'we_dropped_from_aio', label: 'We dropped from AIO', params: { min_revenue_score: 60 } },
+  { id: 'sentiment_drop', label: 'Sentiment drop', params: { window_hours: 168, min_negative_ratio: 0.3 } },
+  { id: 'reddit_opportunity', label: 'Reddit opportunity gap', params: { subreddits: [], min_brands_mentioned: 2 } },
+  { id: 'prompt_lost', label: 'Prompt lost to competitor', params: { min_revenue_score: 60 } },
+  { id: 'capability_movement', label: 'Competitor capability movement', params: { axis: 'schema_score', delta: 10 } },
+];
+
+function AlertsPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [rules, setRules] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [newRule, setNewRule] = useState({ name: '', trigger_type: 'ownership_drop', channels: 'inapp', cooldown_minutes: 60 });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/alerts/${wsId}/rules`, {}, token).then(r => setRules(r.data || [])).catch(() => {});
+    api(`/api/alerts/${wsId}/events?limit=50`, {}, token).then(r => setEvents(r.data || [])).catch(() => {});
+  };
+  useEffect(load, [wsId]);
+
+  const createRule = async () => {
+    if (!newRule.name) { setMsg('Name required.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const trig = TRIGGERS.find(t => t.id === newRule.trigger_type);
+      await api(`/api/alerts/${wsId}/rules`, { method: 'POST', body: JSON.stringify({
+        name: newRule.name,
+        trigger_type: newRule.trigger_type,
+        params: trig?.params || {},
+        channels: newRule.channels.split(',').map(s => s.trim()).filter(Boolean),
+        cooldown_minutes: parseInt(newRule.cooldown_minutes, 10) || 60,
+      })}, token);
+      setNewRule({ name: '', trigger_type: 'ownership_drop', channels: 'inapp', cooldown_minutes: 60 });
+      load();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const deleteRule = async (id) => {
+    if (!confirm('Delete rule?')) return;
+    try { await api(`/api/alerts/${wsId}/rules/${id}`, { method: 'DELETE' }, token); load(); } catch {}
+  };
+
+  const evalNow = async () => {
+    setBusy(true);
+    try { const r = await api(`/api/alerts/${wsId}/evaluate`, { method: 'POST' }, token); setMsg(`Fired ${r.data?.fired || 0} events.`); load(); }
+    catch (e) { setMsg('Evaluate failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Alert Rules</span>
+          <button className="btn btn-sm btn-primary" onClick={evalNow} disabled={busy}>{busy ? 'Evaluating...' : 'Evaluate Now'}</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr 100px 100px', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="Rule name" value={newRule.name} onChange={e => setNewRule({ ...newRule, name: e.target.value })} />
+          <select className="form-input" value={newRule.trigger_type} onChange={e => setNewRule({ ...newRule, trigger_type: e.target.value })}>
+            {TRIGGERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          <input className="form-input" placeholder="channels: inapp,slack:https://hooks...,webhook:https://..." value={newRule.channels} onChange={e => setNewRule({ ...newRule, channels: e.target.value })} />
+          <input className="form-input" type="number" value={newRule.cooldown_minutes} onChange={e => setNewRule({ ...newRule, cooldown_minutes: e.target.value })} title="cooldown min" />
+          <button className="btn btn-primary" onClick={createRule} disabled={busy}>Create</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: msg.includes('failed') || msg.includes('required') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
+        {rules.length === 0 ? <div className="empty-state">⚠<br/>No rules yet.</div> : (
+          <table className="data-table"><thead><tr>
+            <th>Name</th><th>Trigger</th><th>Channels</th><th>Cooldown</th><th>Enabled</th><th></th>
+          </tr></thead><tbody>{rules.map(r => (
+            <tr key={r.id}>
+              <td style={{ fontWeight: 600 }}>{r.name}</td>
+              <td><span className="badge">{r.trigger_type}</span></td>
+              <td style={{ fontSize: 11, fontFamily: 'var(--font-mono)' }}>{Array.isArray(r.channels) ? r.channels.join(', ') : r.channels}</td>
+              <td>{r.cooldown_minutes}m</td>
+              <td>{r.enabled ? <span className="badge emerald">on</span> : <span className="badge gray">off</span>}</td>
+              <td><button className="btn btn-sm" onClick={() => deleteRule(r.id)}>×</button></td>
+            </tr>
+          ))}</tbody></table>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-header">Recent events ({events.length})</div>
+        {events.length === 0 ? <div className="empty-state">⚠<br/>No alerts fired yet.</div> : events.map(e => (
+          <div key={e.id} style={{ padding: 8, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 600 }}>{e.title}</span>
+              <span><span className={`badge ${e.severity === 'critical' ? 'rose' : e.severity === 'warning' ? 'amber' : 'gray'}`}>{e.severity}</span> · {new Date(e.fired_at).toLocaleString()}</span>
+            </div>
+            {e.message && <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>{e.message}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COMPARATIVE REPORT
+// ═══════════════════════════════════════════════════════════════
+
+function ComparativeReportPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [competitors, setCompetitors] = useState([]);
+  const [chosen, setChosen] = useState('');
+  const [html, setHtml] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!wsId) return;
+    api(`/api/attack-map/${wsId}`, {}, token).then(r => setCompetitors((r.data || []).map(x => x.competitor_domain))).catch(() => {});
+  }, [wsId]);
+
+  const generate = async () => {
+    const list = chosen.split(',').map(s => s.trim()).filter(Boolean);
+    if (list.length === 0) return;
+    setBusy(true);
+    try {
+      const r = await api(`/api/reports/comparative/${wsId}`, { method: 'POST', body: JSON.stringify({ competitor_domains: list, include_prompts: true }) }, token);
+      setHtml(r.data?.html || '');
+    } catch (e) { setHtml('<p style="color:red">Failed: ' + e.message + '</p>'); }
+    setBusy(false);
+  };
+
+  const openHtmlWindow = () => {
+    const list = chosen.split(',').map(s => s.trim()).filter(Boolean);
+    const url = `/api/reports/comparative/${wsId}/html?competitors=${encodeURIComponent(list.join(','))}`;
+    window.open(url + (token ? `&token=${token}` : ''), '_blank');
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Comparative Report — "us vs them" PDF-ready</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <input className="form-input" placeholder="competitor domains comma-separated" value={chosen} onChange={e => setChosen(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={generate} disabled={busy}>{busy ? 'Generating...' : 'Generate'}</button>
+          <button className="btn" onClick={openHtmlWindow}>Open Printable</button>
+        </div>
+        {competitors.length > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Known: {competitors.slice(0, 10).join(', ')}</div>
+        )}
+      </div>
+      {html && (
+        <div className="card" style={{ padding: 0, maxHeight: 800, overflow: 'auto' }}>
+          <iframe srcDoc={html} style={{ width: '100%', height: 800, border: 'none', borderRadius: 6 }} title="report" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 
@@ -4880,47 +5306,41 @@ function App() {
   }
 
   const viewMap = {
-    overview: OverviewPage,
-    performance: PerformancePage,
-    deltas: DeltasPage,
-    models: ModelsPage,
-    import: DataImportPage,
-    sources: SourcesPage,
-    scraper: ScraperPage,
-    analysis: AnalysisPage,
-    content: ContentStudioPage,
-    publishing: PublishingPage,
-    pipeline: PipelineActivityPage,
-    campaigns: CampaignsPage,
-    reports: ReportsPage,
-    workspaces: WorkspacesPage,
-    users: UsersPage,
-    audit: AuditPage,
-    settings: SettingsPage,
-    tasks: TaskBoardPage,
-    playbooks: PlaybooksPage,
-    competitors: CompetitorsPage,
-    recommendations: RecommendationsPage,
-    onboarding: OnboardingPage,
-    billing: BillingPage,
-    jobs: JobQueuePage,
-    automations: AutomationsPage,
-    prompts: PromptTemplatesPage,
-    monitoring: MonitoringPage,
+    // ── War Room (default landing) ──
+    warroom: WarRoomPage,
     battlefield: PromptBattlefieldPage,
+    revenue: RevenuePriorityPage,
+    authority: AuthorityScorePage,
+    // ── Intelligence ──
     citation_intel: CitationIntelPage,
     attack_map: AttackMapPage,
-    revenue: RevenuePriorityPage,
+    graph: AuthorityGraphPage,
     journey: BuyerJourneyPage,
+    aio: AioOverviewPage,
+    // ── Action ──
     reddit: RedditCommandPage,
     schema_engine: SchemaEnginePage,
-    aio: AioOverviewPage,
     metadata_studio: MetadataStudioPage,
-    authority: AuthorityScorePage,
     youtube: YouTubeGeoPage,
+    content: ContentStudioPage,
+    publishing: PublishingPage,
+    // ── Ops ──
+    import: DataImportPage,
+    sources: SourcesPage,
+    analysis: AnalysisPage,
+    brands: BrandManagerPage,
+    alerts: AlertsPage,
+    report: ComparativeReportPage,
+    jobs: JobQueuePage,
+    // ── Admin ──
+    workspaces: WorkspacesPage,
+    users: UsersPage,
+    competitors: CompetitorsPage,
+    audit: AuditPage,
+    settings: SettingsPage,
   };
 
-  const ViewComponent = viewMap[state.view] || OverviewPage;
+  const ViewComponent = viewMap[state.view] || WarRoomPage;
 
   return (
     <AuthContext.Provider value={{ user: state.user, token: state.token }}>

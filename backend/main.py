@@ -160,6 +160,33 @@ async def startup():
         )
     logger.info("Initializing Momentus AI database...")
     await init_db()
+    # World-class layer init — soft-fail each so a single module bug can't
+    # block boot.
+    from . import (
+        brand_resolver as _br, entity_graph as _eg,
+        alert_engine as _ae, job_runner as _jr, scheduler as _sch,
+    )
+    for name, fn in (
+        ("brand_resolver", _br.init),
+        ("entity_graph", _eg.init),
+        ("alert_engine", _ae.init),
+        ("job_runner", _jr.init),
+    ):
+        try:
+            await fn()
+            logger.info("Initialized %s schema", name)
+        except Exception as _e:
+            logger.warning("%s.init failed: %s", name, _e)
+    try:
+        await _jr.start_worker()
+        logger.info("Job worker started")
+    except Exception as _e:
+        logger.warning("job_runner.start_worker failed: %s", _e)
+    try:
+        await _sch.start_scheduler()
+        logger.info("Scheduler started")
+    except Exception as _e:
+        logger.warning("scheduler.start_scheduler failed: %s", _e)
     logger.info("Initializing auth tables...")
     await init_auth()
     logger.info("Initializing automation engine...")
@@ -172,7 +199,20 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("Shutting down — stopping background tasks...")
-    await stop_auto_sync()
+    try:
+        await stop_auto_sync()
+    except Exception as _e:
+        logger.warning("stop_auto_sync: %s", _e)
+    try:
+        from . import scheduler as _sch
+        await _sch.stop_scheduler()
+    except Exception as _e:
+        logger.warning("stop_scheduler: %s", _e)
+    try:
+        from . import job_runner as _jr
+        await _jr.stop_worker()
+    except Exception as _e:
+        logger.warning("stop_worker: %s", _e)
     logger.info("Closing database connection...")
     await close_db()
 
@@ -515,7 +555,11 @@ from . import (
     prompt_engine, prompt_tracker, citation_intelligence, attack_map,
     revenue_priority, buyer_journey, reddit_engine, schema_engine,
     ai_overview, metadata_engine, authority_score, youtube_engine,
+    # World-class layer
+    scheduler, job_runner, brand_resolver, entity_graph,
+    alert_engine, badge, comparative_report,
 )
+from fastapi.responses import Response
 
 
 # ─── 1. Prompt Ownership Engine ────────────────────────────────
@@ -858,6 +902,196 @@ async def youtube_list(ws_id: str, limit: int = 100):
 async def youtube_publish(asset_id: str):
     res = await youtube_engine.export_publish_package(asset_id)
     return ApiResponse(data=res).dict()
+
+
+# ═══════════════════════════════════════════════════════════════
+# WORLD-CLASS LAYER — scheduler, jobs, brands, graph, alerts,
+# badge (public), comparative reports
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Scheduler ───────────────────────────────────────────────
+@app.get("/api/scheduler/{ws_id}/runs")
+async def scheduler_runs(ws_id: str, limit: int = 50):
+    rows = await scheduler.list_runs(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/scheduler/{ws_id}/run/{job_name}")
+async def scheduler_run(ws_id: str, job_name: str):
+    res = await scheduler.run_job_now(job_name, ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Job queue ───────────────────────────────────────────────
+@app.get("/api/jobs/{ws_id}")
+async def jobs_list(ws_id: str, limit: int = 50):
+    rows = await job_runner.list_jobs(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/jobs/{ws_id}/enqueue")
+async def jobs_enqueue(ws_id: str, payload: Dict[str, Any]):
+    job_type = (payload or {}).get("job_type", "")
+    pl = (payload or {}).get("payload") or {}
+    if not job_type:
+        raise HTTPException(400, "job_type required")
+    jid = await job_runner.enqueue(ws_id, job_type, pl)
+    return ApiResponse(data={"id": jid}).dict()
+
+
+@app.post("/api/jobs/{ws_id}/{job_id}/cancel")
+async def jobs_cancel(ws_id: str, job_id: str):
+    ok = await job_runner.cancel(job_id)
+    return ApiResponse(data={"cancelled": ok}).dict()
+
+
+# ─── Brand canonicalization ──────────────────────────────────
+@app.get("/api/brands/{ws_id}")
+async def brands_list(ws_id: str):
+    rows = await brand_resolver.list_brands(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/brands/{ws_id}/canonicalize")
+async def brands_canonicalize(ws_id: str, payload: Dict[str, Any]):
+    name = (payload or {}).get("name", "")
+    if not name:
+        raise HTTPException(400, "name required")
+    res = await brand_resolver.canonicalize(ws_id, name)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/brands/{ws_id}/merge")
+async def brands_merge(ws_id: str, payload: Dict[str, Any]):
+    keep = (payload or {}).get("keep_id", "")
+    merge = (payload or {}).get("merge_id", "")
+    if not keep or not merge:
+        raise HTTPException(400, "keep_id and merge_id required")
+    res = await brand_resolver.merge_brands(ws_id, keep, merge)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/brands/{ws_id}/set-canonical-for-us")
+async def brands_set_us(ws_id: str, payload: Dict[str, Any]):
+    name = (payload or {}).get("name", "")
+    domain = (payload or {}).get("domain", "")
+    if not name:
+        raise HTTPException(400, "name required")
+    res = await brand_resolver.set_canonical_for_us(ws_id, name, domain)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Entity graph ────────────────────────────────────────────
+@app.post("/api/graph/{ws_id}/rebuild")
+async def graph_rebuild(ws_id: str):
+    res = await entity_graph.rebuild_from_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/graph/{ws_id}/summary")
+async def graph_summary(ws_id: str):
+    res = await entity_graph.graph_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/graph/{ws_id}/json")
+async def graph_json(ws_id: str, top_n_nodes: int = 80):
+    res = await entity_graph.get_graph_json(ws_id, top_n_nodes=top_n_nodes)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/graph/{ws_id}/neighbors/{node_id}")
+async def graph_neighbors(ws_id: str, node_id: str, limit: int = 50):
+    res = await entity_graph.neighbors(ws_id, node_id, limit=limit)
+    return ApiResponse(data=res, meta={"count": len(res)}).dict()
+
+
+@app.post("/api/graph/{ws_id}/explain")
+async def graph_explain(ws_id: str, payload: Dict[str, Any]):
+    pid = (payload or {}).get("prompt_id", "")
+    brand = (payload or {}).get("competitor_brand", "")
+    if not pid or not brand:
+        raise HTTPException(400, "prompt_id and competitor_brand required")
+    res = await entity_graph.explain_why_wins(ws_id, pid, brand)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Alerts ──────────────────────────────────────────────────
+@app.get("/api/alerts/{ws_id}/rules")
+async def alerts_list_rules(ws_id: str):
+    rows = await alert_engine.list_rules(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/alerts/{ws_id}/rules")
+async def alerts_create_rule(ws_id: str, payload: Dict[str, Any]):
+    p = payload or {}
+    res = await alert_engine.create_rule(
+        workspace_id=ws_id,
+        name=p.get("name", ""),
+        trigger_type=p.get("trigger_type", ""),
+        params=p.get("params") or {},
+        channels=p.get("channels") or ["inapp"],
+        cooldown_minutes=int(p.get("cooldown_minutes", 60)),
+        created_by=p.get("created_by", ""),
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.put("/api/alerts/{ws_id}/rules/{rule_id}")
+async def alerts_update_rule(ws_id: str, rule_id: str, payload: Dict[str, Any]):
+    res = await alert_engine.update_rule(rule_id, **(payload or {}))
+    return ApiResponse(data=res).dict()
+
+
+@app.delete("/api/alerts/{ws_id}/rules/{rule_id}")
+async def alerts_delete_rule(ws_id: str, rule_id: str):
+    ok = await alert_engine.delete_rule(rule_id)
+    return ApiResponse(data={"deleted": ok}).dict()
+
+
+@app.get("/api/alerts/{ws_id}/events")
+async def alerts_events(ws_id: str, limit: int = 100):
+    rows = await alert_engine.list_events(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/alerts/{ws_id}/evaluate")
+async def alerts_evaluate(ws_id: str):
+    res = await alert_engine.evaluate_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Comparative report ──────────────────────────────────────
+@app.post("/api/reports/comparative/{ws_id}")
+async def report_comparative(ws_id: str, payload: Dict[str, Any]):
+    comps = (payload or {}).get("competitor_domains") or []
+    include = bool((payload or {}).get("include_prompts", True))
+    html = await comparative_report.generate_html(ws_id, comps, include_prompts=include)
+    return ApiResponse(data={"html": html}).dict()
+
+
+@app.get("/api/reports/comparative/{ws_id}/html")
+async def report_comparative_html(ws_id: str, competitors: str = ""):
+    comps = [c.strip() for c in competitors.split(",") if c.strip()]
+    html = await comparative_report.generate_html(ws_id, comps, include_prompts=True)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+# ─── Public Authority Score badge (NO AUTH) ──────────────────
+@app.get("/badge/{slug}.svg")
+async def public_badge(slug: str, style: str = "flat"):
+    svg = await badge.render_badge_svg(slug, style=style)
+    return Response(
+        content=svg, media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/badge/{slug}")
+async def public_badge_page(slug: str):
+    html = await badge.badge_html(slug)
+    return HTMLResponse(html, headers={"Cache-Control": "public, max-age=300"})
 
 
 @app.get("/api/peec/field-mapping")
