@@ -2655,21 +2655,31 @@ function DataImportPage({ state }) {
         setImportResult({ success: false, msg: r.error || 'Import failed', warnings });
       } else {
         const d = r.data || r;
-        const imported = d.records || d.imported || 0;
-        setImportResult({
-          success: true,
-          count: imported,
-          msg: `Imported ${imported} records, ${d.sources || 0} sources, ${d.clusters || 0} clusters`,
-        });
-        // Refresh records list
-        try {
-          const fresh = await api('/api/peec/records/' + wsId, {}, token);
-          setRecords(fresh.data || fresh.records || []);
-        } catch (err) { console.warn('API:', err.message); }
+        // Detect prompts-export response (has prompts_upserted) vs the
+        // legacy citations-export response (has records/imported).
+        if (d.prompts_upserted != null || d.observations != null) {
+          setImportResult({
+            success: true,
+            count: d.prompts_upserted || 0,
+            msg: `Peec Prompts Export detected — imported ${d.prompts_upserted || 0} prompts and ${d.observations || 0} observations (our brand surfaced in ${d.our_brand_hits || 0}). Open GEO Conquest → Prompt Battlefield to see them.`,
+          });
+        } else {
+          const imported = d.records || d.imported || 0;
+          setImportResult({
+            success: true,
+            count: imported,
+            msg: `Imported ${imported} records, ${d.sources || 0} sources, ${d.clusters || 0} clusters`,
+          });
+          // Refresh records list
+          try {
+            const fresh = await api('/api/peec/records/' + wsId, {}, token);
+            setRecords(fresh.data || fresh.records || []);
+          } catch (err) { console.warn('API:', err.message); }
+          // Auto-switch to Records tab so user sees what landed
+          if (imported > 0) setTab('records');
+        }
         // Clear the text area so user can upload another file
         setCsvText('');
-        // Auto-switch to Records tab so user sees what landed
-        if (imported > 0) setTab('records');
       }
     } catch (e) {
       const msg = typeof e.message === 'string' ? e.message : JSON.stringify(e.message);
