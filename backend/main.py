@@ -573,9 +573,15 @@ async def prompts_battlefield(ws_id: str):
 # ─── 2. Citation Intelligence Layer ────────────────────────────
 
 @app.post("/api/intel/diagnose/{ws_id}/{prompt_id}")
-async def intel_diagnose(ws_id: str, prompt_id: str, competitor_domain: str = "", max_pages: int = 2):
+async def intel_diagnose(
+    ws_id: str, prompt_id: str,
+    competitor_domain: str = "", max_pages: int = 2,
+    payload: Optional[Dict[str, Any]] = None,
+):
+    manual_urls = (payload or {}).get("manual_urls") if payload else None
     res = await citation_intelligence.diagnose_prompt(
-        ws_id, prompt_id, competitor_domain=competitor_domain, max_pages=max_pages,
+        ws_id, prompt_id, competitor_domain=competitor_domain,
+        max_pages=max_pages, manual_urls=manual_urls,
     )
     return ApiResponse(data=res).dict()
 
@@ -607,6 +613,12 @@ async def attack_map_analyze(ws_id: str, payload: Dict[str, Any]):
         raise HTTPException(400, "competitor_domain required")
     res = await attack_map.analyze_competitor(ws_id, domain,
         sample_urls=int((payload or {}).get("sample_urls", 3)))
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/attack-map/{ws_id}/analyze-all-known")
+async def attack_map_analyze_all(ws_id: str, max_competitors: int = 12):
+    res = await attack_map.analyze_all_known(ws_id, max_competitors=max_competitors)
     return ApiResponse(data=res).dict()
 
 
@@ -665,6 +677,16 @@ async def reddit_harvest(ws_id: str):
     return ApiResponse(data=res).dict()
 
 
+@app.post("/api/reddit/{ws_id}/harvest-subreddits")
+async def reddit_harvest_subs(ws_id: str, payload: Dict[str, Any]):
+    subs = (payload or {}).get("subreddits") or []
+    if not subs:
+        raise HTTPException(400, "subreddits list required")
+    res = await reddit_engine.harvest_subreddits(ws_id, subs,
+        max_threads_per_sub=int((payload or {}).get("max_threads_per_sub", 15)))
+    return ApiResponse(data=res).dict()
+
+
 @app.get("/api/reddit/{ws_id}")
 async def reddit_list(ws_id: str, only_gaps: bool = False):
     rows = await reddit_engine.list_intel(ws_id, only_gaps=only_gaps)
@@ -719,6 +741,15 @@ async def aio_losses(ws_id: str, limit: int = 50):
 @app.post("/api/aio/{ws_id}/detect-movements")
 async def aio_movements(ws_id: str):
     res = await ai_overview.detect_movements(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/aio/{ws_id}/track-all")
+async def aio_track_all(ws_id: str, max_prompts: int = 30):
+    """One-click: run the google_aio adapter on every high-value prompt."""
+    res = await prompt_tracker.track_workspace(
+        ws_id, only_high_value=True, max_prompts=max_prompts, models=["google_aio"],
+    )
     return ApiResponse(data=res).dict()
 
 

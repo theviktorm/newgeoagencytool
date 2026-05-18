@@ -122,11 +122,17 @@ async def coverage_map(workspace_id: str, refresh: bool = True) -> Dict[str, Any
     )
     cites_by_stage = {r["stage"]: int(r["cites"] or 0) for r in cite_rows}
 
-    total_pages = sum(pages_by_stage.values()) or 1
+    # Combine pages + prompts so journey coverage works on CSV-only
+    # workspaces (no scraped pages yet).
+    asset_by_stage = {
+        s: pages_by_stage.get(s, 0) + prompts_by_stage.get(s, 0)
+        for s in STAGES
+    }
+    total_assets = sum(asset_by_stage.values()) or 1
     out: Dict[str, Any] = {}
     for stage in STAGES:
-        actual = pages_by_stage.get(stage, 0)
-        actual_ratio = actual / total_pages if total_pages else 0.0
+        actual = asset_by_stage.get(stage, 0)
+        actual_ratio = actual / total_assets if total_assets else 0.0
         target_ratio = BENCHMARK_RATIO[stage]
         coverage = min(100.0, (actual_ratio / target_ratio) * 100.0) if target_ratio else 100.0
         gap = "none"

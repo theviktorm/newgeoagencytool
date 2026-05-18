@@ -62,6 +62,16 @@ async def overview(workspace_id: str) -> Dict[str, Any]:
     top_publishers = sorted(publisher_count.items(), key=lambda kv: -kv[1])[:10]
     top_brands = sorted(visible_brands.items(), key=lambda kv: -kv[1])[:10]
 
+    # Detect tracker readiness so the UI can show a clear setup hint
+    # instead of an empty page when no SerpAPI key is configured.
+    import os
+    try:
+        from .config import settings as _s
+        has_serpapi = bool(os.environ.get("SERPAPI_KEY")
+                           or getattr(_s, "serpapi_key", ""))
+    except Exception:
+        has_serpapi = bool(os.environ.get("SERPAPI_KEY"))
+
     return {
         "workspace_id": workspace_id,
         "tracked_prompts": len(latest),
@@ -70,6 +80,11 @@ async def overview(workspace_id: str) -> Dict[str, Any]:
         "without_us": aio_count - we_in,
         "top_publishers": [{"domain": d, "appearances": n} for d, n in top_publishers],
         "top_brands": [{"brand": b, "appearances": n} for b, n in top_brands],
+        "tracker_configured": has_serpapi,
+        "tracker_hint": (
+            "Set SERPAPI_KEY in Railway → Variables to start live AIO tracking. "
+            "Without it, AIO observations only come from manual prompt tracks."
+        ) if not has_serpapi else "",
     }
 
 

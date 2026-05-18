@@ -3940,6 +3940,7 @@ function PromptBattlefieldPage({ state }) {
               {['awareness','problem','solution','comparison','trust','objection','decision'].map(s => <option key={s} value={s}>{s}</option>)}
             </select>
             <button className="btn btn-sm btn-primary" onClick={trackAll} disabled={tracking}>{tracking ? 'Tracking...' : 'Track All (high-value)'}</button>
+          <button className="btn btn-sm" onClick={async () => { setBusy(true); setMsg(''); try { const r = await api(`/api/prompts/${wsId}/reclassify?max_n=40`, { method: 'POST' }, token); setMsg(`Claude classified ${r.data?.reclassified || 0} prompts.`); load(); } catch (e) { setMsg('Reclassify failed: ' + e.message); } setBusy(false); }} disabled={busy}>Reclassify (Claude)</button>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
@@ -3979,12 +3980,17 @@ function CitationIntelPage({ state }) {
   const { token } = useContext(AuthContext);
   const wsId = state.activeWorkspace?.id;
   const [diags, setDiags] = useState([]);
+  const [prompts, setPrompts] = useState([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [selPrompt, setSelPrompt] = useState('');
+  const [competitor, setCompetitor] = useState('');
+  const [manualUrl, setManualUrl] = useState('');
 
   const load = () => {
     if (!wsId) return;
     api(`/api/intel/diagnostics/${wsId}`, {}, token).then(r => setDiags(r.data || [])).catch(() => {});
+    api(`/api/prompts/${wsId}?min_revenue=40&limit=200`, {}, token).then(r => setPrompts(r.data || [])).catch(() => {});
   };
   useEffect(load, [wsId]);
 
@@ -3993,6 +3999,20 @@ function CitationIntelPage({ state }) {
     try {
       const r = await api(`/api/intel/diagnose/${wsId}?top_n=8`, { method: 'POST' }, token);
       setMsg(`Ran ${r.data?.diagnosed || 0} diagnoses.`); load();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const runOne = async () => {
+    if (!selPrompt) { setMsg('Pick a prompt first.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const qs = competitor ? '?competitor_domain=' + encodeURIComponent(competitor) : '';
+      const body = manualUrl.trim() ? JSON.stringify({ manual_urls: [manualUrl.trim()] }) : null;
+      const opts = { method: 'POST' };
+      if (body) opts.body = body;
+      await api(`/api/intel/diagnose/${wsId}/${selPrompt}${qs}`, opts, token);
+      setMsg('Diagnosis complete.'); load();
     } catch (e) { setMsg('Failed: ' + e.message); }
     setBusy(false);
   };
@@ -4007,7 +4027,16 @@ function CitationIntelPage({ state }) {
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           For every prompt where a competitor outranks us, we scrape their winning page and ask Claude WHY AI cites them. Diagnosis + actions persist below.
         </p>
-        {msg && <div style={{ fontSize: 11, color: 'var(--emerald)' }}>{msg}</div>}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 6, marginTop: 8 }}>
+          <select className="form-input" value={selPrompt} onChange={e => setSelPrompt(e.target.value)}>
+            <option value="">— pick a prompt —</option>
+            {prompts.map(p => <option key={p.id} value={p.id}>{p.text.slice(0, 80)}</option>)}
+          </select>
+          <input className="form-input" placeholder="competitor domain/brand" value={competitor} onChange={e => setCompetitor(e.target.value)} />
+          <input className="form-input" placeholder="manual URL (optional)" value={manualUrl} onChange={e => setManualUrl(e.target.value)} />
+          <button className="btn" onClick={runOne} disabled={busy}>Diagnose this</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: msg.includes('Failed') ? 'var(--rose)' : 'var(--emerald)', marginTop: 6 }}>{msg}</div>}
       </div>
       {diags.length === 0 ? (
         <div className="empty-state">◎<br/>No diagnostics yet. Run the diagnosis above.</div>
@@ -4073,15 +4102,30 @@ function AttackMapPage({ state }) {
     setBusy(false);
   };
 
+  const analyzeAll = async () => {
+    setBusy(true);
+    try {
+      await api(`/api/attack-map/${wsId}/analyze-all-known?max_competitors=12`, { method: 'POST' }, token);
+      load();
+    } catch (e) { /* surface inline */ }
+    setBusy(false);
+  };
+
   const AXES = ['schema','reddit','youtube','faq_depth','decision_support','review','entity_consistency','pr','local_authority'];
 
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
       <div className="card">
         <div className="card-header">GEO Attack Map — find the open flank</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          After your Peec CSV import, every competitor brand mentioned in your prompts gets a seeded
+          capability row. Click <b>Analyze All Known</b> to refine them with page scrapes + Claude diagnosis,
+          or add a specific competitor domain below.
+        </p>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <input className="form-input" placeholder="competitor domain (e.g. medicover.hu)" value={domain} onChange={e => setDomain(e.target.value)} style={{ flex: 1 }} />
+          <input className="form-input" placeholder="competitor domain or brand (e.g. medicover.hu or Aesthetica)" value={domain} onChange={e => setDomain(e.target.value)} style={{ flex: 1 }} />
           <button className="btn btn-primary" onClick={analyze} disabled={busy}>{busy ? 'Analyzing...' : 'Analyze Competitor'}</button>
+          <button className="btn" onClick={analyzeAll} disabled={busy}>Analyze All Known</button>
         </div>
       </div>
 
@@ -4247,6 +4291,8 @@ function RedditCommandPage({ state }) {
   const [intel, setIntel] = useState([]);
   const [onlyGaps, setOnlyGaps] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [subsText, setSubsText] = useState('plasticsurgery, AskDocs, hungary');
+  const [msg, setMsg] = useState('');
 
   const load = () => {
     if (!wsId) return;
@@ -4256,8 +4302,22 @@ function RedditCommandPage({ state }) {
   useEffect(load, [wsId, onlyGaps]);
 
   const harvest = async () => {
-    setBusy(true);
-    try { await api(`/api/reddit/${wsId}/harvest`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(true); setMsg('');
+    try { const r = await api(`/api/reddit/${wsId}/harvest`, { method: 'POST' }, token); const d = r.data || r; setMsg(`Harvested ${d.threads || 0} threads from existing Peec citations.`); load(); }
+    catch (e) { setMsg('Harvest failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const harvestSubs = async () => {
+    const subs = subsText.split(',').map(s => s.trim()).filter(Boolean);
+    if (subs.length === 0) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/reddit/${wsId}/harvest-subreddits`, { method: 'POST', body: JSON.stringify({ subreddits: subs }) }, token);
+      const d = r.data || r;
+      setMsg(`Pulled ${d.threads || 0} hot threads across ${(d.subreddits || []).length} subreddits. ${d.opportunity_gaps || 0} opportunity gaps.`);
+      load();
+    } catch (e) { setMsg('Manual harvest failed: ' + e.message); }
     setBusy(false);
   };
 
@@ -4266,9 +4326,15 @@ function RedditCommandPage({ state }) {
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Reddit Command Center</span>
-          <button className="btn btn-sm btn-primary" onClick={harvest} disabled={busy}>{busy ? 'Harvesting...' : 'Harvest Reddit Citations'}</button>
+          <button className="btn btn-sm btn-primary" onClick={harvest} disabled={busy}>{busy ? 'Harvesting...' : 'Harvest from Peec citations'}</button>
         </div>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>AI weighs Reddit as authority. Find threads where competitors are mentioned and you are not.</p>
+        <div style={{ display: 'flex', gap: 6, marginTop: 8, marginBottom: 4 }}>
+          <input className="form-input" placeholder="comma-separated subreddits (e.g. budapest, hungary, plasticsurgery)"
+            value={subsText} onChange={e => setSubsText(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn" onClick={harvestSubs} disabled={busy}>Pull hot threads</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
         {cc && (
           <div className="metrics-grid" style={{ marginTop: 8 }}>
             <div className="metric-card"><div className="metric-label">THREADS TRACKED</div><div className="metric-value">{cc.thread_count || 0}</div></div>
@@ -4395,12 +4461,28 @@ function AioOverviewPage({ state }) {
     setBusy(false);
   };
 
+  const trackAll = async () => {
+    setBusy(true);
+    try { await api(`/api/aio/${wsId}/track-all?max_prompts=30`, { method: 'POST' }, token); load(); } catch {}
+    setBusy(false);
+  };
+
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      {ov && !ov.tracker_configured && (
+        <div className="card" style={{ borderLeft: '3px solid var(--amber)' }}>
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--amber)' }}>
+            ⚠ Live AIO tracking is off: <code>SERPAPI_KEY</code> is not set. Add it in Railway → Variables to populate this page automatically. Without it, AIO observations only come from manual prompt tracks.
+          </div>
+        </div>
+      )}
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Google AI Overview Tracker</span>
-          <button className="btn btn-sm btn-primary" onClick={detect} disabled={busy}>Detect Movements</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-sm btn-primary" onClick={trackAll} disabled={busy || !ov?.tracker_configured}>Track All High-Value</button>
+            <button className="btn btn-sm" onClick={detect} disabled={busy}>Detect Movements</button>
+          </div>
         </div>
         {ov && (
           <div className="metrics-grid" style={{ marginTop: 8 }}>

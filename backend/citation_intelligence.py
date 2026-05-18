@@ -38,11 +38,13 @@ async def diagnose_prompt(
     prompt_id: str,
     competitor_domain: str = "",
     max_pages: int = 2,
+    manual_urls: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Run the full diagnosis for a single prompt.
 
-    1. From prompt_observations, identify the URL(s) that the AI cited for
-       `competitor_domain` (or the leader if none specified).
+    1. Find the URL(s) AI cited for `competitor_domain`; if none are known
+       use `manual_urls` from the caller; if none of those either, guess
+       the competitor's homepage from the brand/domain string.
     2. Scrape those pages.
     3. Pull schema breadth from the scraped JSON-LD.
     4. Ask Claude to grade content/schema/authority/reddit/youtube/entity
@@ -63,7 +65,9 @@ async def diagnose_prompt(
         if not leader:
             raise ValueError("no competitor leader available — pass competitor_domain explicitly")
 
-    urls = await _winning_urls_for(prompt_id, leader, max_pages)
+    urls = list(manual_urls or [])
+    if not urls:
+        urls = await _winning_urls_for(prompt_id, leader, max_pages)
     if not urls:
         # last-ditch: search peec sources for anything on that domain
         rows = await fetch_all(
@@ -73,7 +77,16 @@ async def diagnose_prompt(
         )
         urls = [r["url"] for r in rows if r.get("url")]
     if not urls:
-        raise ValueError(f"no cited URLs found for {leader} on prompt {prompt_id}")
+        # Final fallback: guess a homepage. If the leader string already
+        # looks like a domain, hit it directly; otherwise build a slug.
+        guessed = _guess_homepage(leader)
+        if guessed:
+            urls = [guessed]
+    if not urls:
+        raise ValueError(
+            f"No cited URLs known for '{leader}' on this prompt and no "
+            "homepage could be guessed. Pass `manual_urls` explicitly."
+        )
 
     scraped = await scrape_urls(urls, project_id=workspace_id)
     pages = scraped.get("pages") or scraped.get("results") or scraped or []
@@ -279,6 +292,26 @@ def _evidence_for(p: Dict[str, Any]) -> Dict[str, Any]:
         "schema_count": len(p.get("schema") or p.get("jsonld") or [] or []),
         "word_count": len((p.get("text") or "").split()),
     }
+
+
+def _guess_homepage(brand_or_domain: str) -> str:
+    """If the string already has a dot, treat as a domain and prepend https.
+    Otherwise build a slug + .com — best-effort, gives Claude something to
+    chew on when the brand is just a name like 'Pasarét Klinika'."""
+    s = (brand_or_domain or "").strip().lower()
+    if not s:
+        return ""
+    if "." in s and " " not in s:
+        if s.startswith(("http://", "https://")):
+            return s
+        return "https://" + s.lstrip("/")
+    # Hungarian/German often uses ´á´ etc — strip accents then dash
+    import unicodedata
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    if not s:
+        return ""
+    return f"https://www.{s}.com"
 
 
 def _domain(url: str) -> str:

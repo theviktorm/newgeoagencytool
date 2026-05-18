@@ -47,11 +47,21 @@ WEIGHTS = {
 async def compute_for_workspace(workspace_id: str) -> Dict[str, Any]:
     """Our brand's GEO Authority Score."""
     ws = await fetch_one(
-        "SELECT brand_name, name, domain FROM workspaces WHERE id = ?",
+        "SELECT brand_name, name, domains FROM workspaces WHERE id = ?",
         (workspace_id,),
     )
-    domain = ((ws or {}).get("domain") or "").lower().lstrip("www.")
     brand = ((ws or {}).get("brand_name") or (ws or {}).get("name") or "").lower()
+    # workspaces.domains is stored as a JSON array; take the first if present.
+    domain = ""
+    try:
+        import json as _json
+        ds = (ws or {}).get("domains") or "[]"
+        if isinstance(ds, str):
+            ds = _json.loads(ds)
+        if isinstance(ds, list) and ds:
+            domain = str(ds[0]).lower().lstrip("www.")
+    except Exception:
+        domain = ""
     return await _compute(workspace_id, subject_domain=domain or brand,
                           is_us=True, brand_alias=brand)
 

@@ -80,13 +80,31 @@ async def analyze_competitor(
 
     pages: List[Dict[str, Any]] = []
     if urls:
-        scraped = await scrape_urls(urls, project_id=workspace_id)
-        if isinstance(scraped, dict):
-            pages = list(scraped.values()) if not scraped.get("pages") else scraped["pages"]
-        elif isinstance(scraped, list):
-            pages = scraped
+        try:
+            scraped = await scrape_urls(urls, project_id=workspace_id)
+            if isinstance(scraped, dict):
+                pages = list(scraped.values()) if not scraped.get("pages") else scraped["pages"]
+            elif isinstance(scraped, list):
+                pages = scraped
+        except Exception as e:
+            logger.warning("scrape during attack-map analyze failed: %s", e)
+
+    # How often this brand surfaces in prompt observations (CSV-derived).
+    # Page-free fallback so the Attack Map is useful immediately after a CSV
+    # import, before anything has been scraped.
+    obs_brand_count = await _count(
+        "SELECT COUNT(*) AS n FROM prompt_observations WHERE workspace_id = ? "
+        "AND brands_appeared LIKE ?",
+        (workspace_id, f"%{competitor_domain}%"),
+    )
 
     scores = _compute_scores_local(pages, reddit_count, aio_count, obs_count)
+
+    if not pages and obs_brand_count:
+        scaled = min(100.0, obs_brand_count * 6.0)
+        scores["decision_support_score"] = max(scores["decision_support_score"], scaled)
+        scores["local_authority_score"] = max(scores["local_authority_score"], scaled)
+        scores["entity_consistency_score"] = max(scores["entity_consistency_score"], scaled * 0.6)
 
     # Optional: ask Claude to refine the diagnosis + summary text. Cheap,
     # one call per competitor.
@@ -154,6 +172,46 @@ async def list_attack_map(workspace_id: str) -> List[Dict[str, Any]]:
         "ORDER BY overall_strength DESC",
         (workspace_id,),
     )
+
+
+async def analyze_all_known(workspace_id: str, max_competitors: int = 12) -> Dict[str, Any]:
+    """One-click: re-analyze every competitor we've already seen for this
+    workspace (either previously seeded by the CSV importer or added by
+    the user). Returns per-domain results."""
+    rows = await fetch_all(
+        "SELECT competitor_domain FROM competitor_capabilities "
+        "WHERE workspace_id = ? ORDER BY overall_strength DESC LIMIT ?",
+        (workspace_id, max_competitors),
+    )
+    if not rows:
+        # Bootstrap: pull the top brands from prompt_observations directly.
+        obs = await fetch_all(
+            "SELECT brands_appeared FROM prompt_observations WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        counts: Dict[str, int] = {}
+        for o in obs:
+            try:
+                import json as _json
+                brands = _json.loads(o.get("brands_appeared") or "[]")
+            except Exception:
+                brands = []
+            for b in brands or []:
+                name = (b.get("name") if isinstance(b, dict) else str(b)) or ""
+                name = name.strip().lower()
+                if name:
+                    counts[name] = counts.get(name, 0) + 1
+        top = sorted(counts.items(), key=lambda kv: -kv[1])[:max_competitors]
+        rows = [{"competitor_domain": d} for d, _ in top]
+
+    results: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            results.append(await analyze_competitor(workspace_id, r["competitor_domain"]))
+        except Exception as e:
+            logger.warning("analyze %s failed: %s", r["competitor_domain"], e)
+            results.append({"competitor_domain": r["competitor_domain"], "error": str(e)})
+    return {"analyzed": len(results), "details": results}
 
 
 async def list_movements(workspace_id: str, days: int = 14) -> List[Dict[str, Any]]:

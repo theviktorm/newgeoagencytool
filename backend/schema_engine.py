@@ -77,10 +77,14 @@ async def audit_url(
     ideal sets, generate diagnosis + remediations."""
     target_prompts = target_prompts or []
     schemas = await _load_schemas_for_url(workspace_id, url)
-    if schemas is None:
-        # Not yet scraped — pull on demand
-        scraped = await scrape_urls([url], project_id=workspace_id)
-        schemas = _extract_schemas_from_scrape(scraped, url)
+    if not schemas:
+        # Not yet scraped (or scraped but no JSON-LD captured) — pull on demand
+        try:
+            scraped = await scrape_urls([url], project_id=workspace_id)
+            schemas = _extract_schemas_from_scrape(scraped, url) or []
+        except Exception as e:
+            logger.warning("schema audit auto-scrape %s failed: %s", url, e)
+            schemas = []
 
     types_present = sorted({_jsonld_type(s) for s in schemas if s} - {""})
 

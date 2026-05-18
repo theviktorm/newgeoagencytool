@@ -129,6 +129,78 @@ async def harvest_workspace(workspace_id: str) -> Dict[str, Any]:
     return {"threads": n_persisted, "opportunity_gaps": n_gaps}
 
 
+async def harvest_subreddits(
+    workspace_id: str,
+    subreddits: List[str],
+    max_threads_per_sub: int = 15,
+) -> Dict[str, Any]:
+    """Manual entry point: given a list of subreddit names, pull their hot
+    threads, detect brand mentions + sentiment + opportunity gaps. Works
+    even with zero Peec citation history."""
+    target_brand = ""
+    ws = await fetch_one(
+        "SELECT brand_name FROM workspaces WHERE id = ?", (workspace_id,),
+    )
+    if ws and ws.get("brand_name"):
+        target_brand = ws["brand_name"].lower()
+
+    n_persisted, n_gaps = 0, 0
+    async with httpx.AsyncClient(headers=REDDIT_HEADERS, timeout=15.0,
+                                 follow_redirects=True) as http:
+        for sub in subreddits:
+            sub = (sub or "").strip().lstrip("r/").strip("/")
+            if not sub:
+                continue
+            try:
+                listing_url = f"https://www.reddit.com/r/{sub}/hot.json?limit={max_threads_per_sub}"
+                r = await http.get(listing_url)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                kids = (data.get("data", {}) or {}).get("children", []) or []
+            except Exception as e:
+                logger.warning("subreddit fetch r/%s failed: %s", sub, e)
+                continue
+            for k in kids:
+                d = (k.get("data") or {})
+                permalink = d.get("permalink") or ""
+                if not permalink:
+                    continue
+                url = f"https://www.reddit.com{permalink}"
+                title = d.get("title", "") or ""
+                body = d.get("selftext", "") or ""
+                mentions = _extract_brand_mentions(title + " " + body)
+                our_present = bool(target_brand) and any(target_brand in m for m in mentions)
+                is_gap = bool(mentions) and not our_present
+                if is_gap:
+                    n_gaps += 1
+                disc_type = _discussion_type(title + " " + body)
+                sentiment_label, sentiment_score = _sentiment(title + " " + body)
+                await execute(
+                    "INSERT INTO reddit_intel "
+                    "(id, workspace_id, subreddit, thread_url, thread_title, "
+                    " prompt_id, discussion_type, brands_mentioned, our_brand_mentioned, "
+                    " sentiment_score, sentiment_label, is_opportunity_gap, "
+                    " suggested_action) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        gen_id("ri-"), workspace_id, sub, url, title[:300],
+                        "",
+                        disc_type, to_json(mentions),
+                        1 if our_present else 0,
+                        sentiment_score, sentiment_label,
+                        1 if is_gap else 0,
+                        _suggest_action(sub, disc_type, is_gap, our_present),
+                    ),
+                )
+                n_persisted += 1
+    return {
+        "threads": n_persisted,
+        "opportunity_gaps": n_gaps,
+        "subreddits": [s.strip().lstrip("r/").strip("/") for s in subreddits if s],
+    }
+
+
 async def list_intel(workspace_id: str, only_gaps: bool = False) -> List[Dict[str, Any]]:
     sql = "SELECT * FROM reddit_intel WHERE workspace_id = ?"
     args: List[Any] = [workspace_id]

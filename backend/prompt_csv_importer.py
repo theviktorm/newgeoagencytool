@@ -152,11 +152,10 @@ async def import_csv(
         except Exception as e:
             summary["errors"].append({"row": summary["rows"], "error": str(e)})
 
-    # Refresh ownership rollups for the prompts we just touched, but only do
-    # the top revenue ones so we don't thrash the DB on a 5k-row import.
+    # Refresh ownership rollups for the prompts we just touched.
     try:
-        top_prompts = await prompt_engine.list_prompts(workspace_id, limit=200)
-        for p in top_prompts[:50]:
+        top_prompts = await prompt_engine.list_prompts(workspace_id, limit=500)
+        for p in top_prompts[:200]:
             try:
                 await prompt_engine.recompute_ownership(workspace_id, p["id"])
             except Exception:
@@ -164,15 +163,84 @@ async def import_csv(
     except Exception:
         pass
 
-    # Optional: kick off Claude reclassification in the background. We do it
-    # synchronously but capped at 20 so a big import doesn't stall the user.
+    # Seed competitor_capabilities rows from brand mentions so the Attack
+    # Map page has something to show without requiring a Peec MCP sync.
+    try:
+        await _seed_competitor_capabilities_from_csv(workspace_id)
+    except Exception as e:
+        logger.warning("competitor seeding failed: %s", e)
+
+    # Optional: Claude classification for the top-revenue prompts so the
+    # battlefield filters & priority calc reflect real intent. Capped so a
+    # huge CSV import doesn't stall the request.
     if classify:
         try:
-            await prompt_engine.reclassify_workspace(workspace_id, max_n=20)
+            await prompt_engine.reclassify_workspace(workspace_id, max_n=40)
         except Exception:
             pass
 
     return summary
+
+
+async def _seed_competitor_capabilities_from_csv(workspace_id: str) -> None:
+    """Build a first-pass competitor_capabilities row for every brand we saw
+    in the Prompts CSV. Scores come from prompt_observations alone — they get
+    refined later by attack_map.analyze_competitor (which scrapes pages)."""
+    from .database import fetch_all as _fa, execute as _ex
+    obs_rows = await _fa(
+        "SELECT brands_appeared FROM prompt_observations WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    if not obs_rows:
+        return
+    counts: Dict[str, int] = {}
+    pos_sum: Dict[str, float] = {}
+    for o in obs_rows:
+        try:
+            import json as _json
+            brands = _json.loads(o.get("brands_appeared") or "[]")
+        except Exception:
+            brands = []
+        for b in brands or []:
+            name = (b.get("name") if isinstance(b, dict) else str(b)) or ""
+            name = name.strip().lower()
+            if not name:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+            pos_sum[name] = pos_sum.get(name, 0.0) + (1.0 / max(1, int(
+                (b.get("position") if isinstance(b, dict) else 1) or 1)))
+    if not counts:
+        return
+    # Normalise to 0-100 against the strongest brand
+    max_count = max(counts.values()) or 1
+    for brand, n in counts.items():
+        strength = min(100.0, (n / max_count) * 100.0)
+        avg_pos_score = min(100.0, (pos_sum[brand] / n) * 100.0)
+        # Local-authority proxy = how often they get cited at all
+        await _ex(
+            """INSERT INTO competitor_capabilities
+               (workspace_id, competitor_domain, schema_score, reddit_score,
+                youtube_score, faq_depth_score, decision_support_score,
+                review_score, entity_consistency_score, pr_score,
+                local_authority_score, overall_strength, weakest_axis,
+                weakest_axis_score, summary, analyzed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(workspace_id, competitor_domain) DO UPDATE SET
+                 decision_support_score = MAX(decision_support_score, excluded.decision_support_score),
+                 local_authority_score = MAX(local_authority_score, excluded.local_authority_score),
+                 overall_strength = MAX(overall_strength, excluded.overall_strength),
+                 analyzed_at = excluded.analyzed_at""",
+            (
+                workspace_id, brand,
+                0.0, 0.0, 0.0, 0.0,         # schema/reddit/youtube/faq — need scrape
+                avg_pos_score,              # decision_support proxy from position
+                0.0, 0.0, 0.0,
+                strength,                   # local_authority proxy from raw frequency
+                (avg_pos_score + strength) / 2.0,
+                "schema_score", 0.0,
+                f"Seeded from CSV: cited in {n} prompt observation(s).",
+            ),
+        )
 
 
 async def _process_row(
