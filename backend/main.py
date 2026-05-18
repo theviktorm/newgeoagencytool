@@ -278,6 +278,10 @@ async def peec_import_csv(
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         text = content.decode("latin-1")
+    # Strip UTF-8 BOM if Excel/Google Sheets exported one — otherwise the
+    # first header looks like "﻿status" and header matching fails.
+    if text.startswith("﻿"):
+        text = text.lstrip("﻿")
 
     # Peek at the header to route between Citations export and Prompts export.
     from .prompt_csv_importer import is_prompts_export, import_csv as import_prompts_csv
@@ -287,7 +291,10 @@ async def peec_import_csv(
     except StopIteration:
         return ApiResponse(success=False, error="CSV has no rows").dict()
 
-    if is_prompts_export(peek_headers):
+    is_prompts = is_prompts_export(peek_headers)
+    logger.info("CSV import: headers=%s prompts_export=%s", peek_headers, is_prompts)
+
+    if is_prompts:
         # Peec Prompts Export — feed the Prompt Battlefield engine.
         res = await import_prompts_csv(project_id, text)
         return ApiResponse(
@@ -299,9 +306,14 @@ async def peec_import_csv(
     # Citations export (legacy URL importer)
     records, validation = parse_csv_content(text, project_id)
     if not validation.get("valid"):
+        # Surface what we actually saw so the user/devs can diagnose.
+        validation["headers_seen"] = peek_headers
+        validation["detected_shape"] = "neither (no url column, no prompt column)"
         return ApiResponse(
             success=False,
-            error="CSV validation failed",
+            error=("CSV validation failed: no `url` column for a Citations "
+                   "export AND no `prompt` column for a Prompts export. "
+                   "Export the right report from Peec."),
             data=validation,
         ).dict()
 
