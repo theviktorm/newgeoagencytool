@@ -279,8 +279,25 @@ async def peec_import_csv(
     except UnicodeDecodeError:
         text = content.decode("latin-1")
 
-    records, validation = parse_csv_content(text, project_id)
+    # Peek at the header to route between Citations export and Prompts export.
+    from .prompt_csv_importer import is_prompts_export, import_csv as import_prompts_csv
+    import csv as _csv, io as _io
+    try:
+        peek_headers = next(_csv.reader(_io.StringIO(text)))
+    except StopIteration:
+        return ApiResponse(success=False, error="CSV has no rows").dict()
 
+    if is_prompts_export(peek_headers):
+        # Peec Prompts Export — feed the Prompt Battlefield engine.
+        res = await import_prompts_csv(project_id, text)
+        return ApiResponse(
+            success=res.get("success", True),
+            error=res.get("error") or None,
+            data=res,
+        ).dict()
+
+    # Citations export (legacy URL importer)
+    records, validation = parse_csv_content(text, project_id)
     if not validation.get("valid"):
         return ApiResponse(
             success=False,
@@ -290,8 +307,34 @@ async def peec_import_csv(
 
     result = await ingest_records(records, project_id)
     result["validation"] = validation
-
     return ApiResponse(data=result).dict()
+
+
+@app.post("/api/prompts/{ws_id}/import-csv")
+async def prompts_import_csv(
+    ws_id: str,
+    file: UploadFile = File(...),
+    target_brand: str = Form(""),
+    classify: bool = Form(False),
+):
+    """Dedicated importer for Peec Prompts Export CSVs (one row per tracked
+    prompt with visibility/sentiment/position/share_of_voice/mentions)."""
+    if not file.filename or not (
+        file.filename.endswith(".csv") or file.filename.endswith(".tsv")
+    ):
+        raise HTTPException(400, "File must be a .csv or .tsv")
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(400, "CSV file too large (max 50MB)")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    from .prompt_csv_importer import import_csv as import_prompts_csv
+    res = await import_prompts_csv(ws_id, text, target_brand=target_brand, classify=classify)
+    return ApiResponse(
+        success=res.get("success", True), error=res.get("error") or None, data=res,
+    ).dict()
 
 @app.post("/api/peec/import/api")
 async def peec_import_api(req: PeecConnectRequest):

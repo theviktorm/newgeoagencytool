@@ -3852,6 +3852,7 @@ function PromptBattlefieldPage({ state }) {
   const [busy, setBusy] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [msg, setMsg] = useState('');
+  const [importing, setImporting] = useState(false);
 
   const load = () => {
     if (!wsId) return;
@@ -3860,6 +3861,25 @@ function PromptBattlefieldPage({ state }) {
       .then(r => setPrompts(r.data || [])).catch(() => {});
   };
   useEffect(load, [wsId, filterStage]);
+
+  const importCsv = async (file) => {
+    if (!file || !wsId) return;
+    setImporting(true); setMsg('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('classify', 'false');
+      const r = await api(`/api/prompts/${wsId}/import-csv`, { method: 'POST', body: fd }, token);
+      if (r.success === false) {
+        setMsg('Import failed: ' + (r.error || 'unknown'));
+      } else {
+        const d = r.data || r;
+        setMsg(`Imported ${d.prompts_upserted} prompts, ${d.observations} observations, our brand in ${d.our_brand_hits}.`);
+        load();
+      }
+    } catch (e) { setMsg('Import failed: ' + e.message); }
+    setImporting(false);
+  };
 
   const addPrompt = async () => {
     if (!newText.trim()) return;
@@ -3926,6 +3946,12 @@ function PromptBattlefieldPage({ state }) {
           <input className="form-input" placeholder='Add a prompt: e.g. "best private orthopedic surgeon Budapest"'
             value={newText} onChange={e => setNewText(e.target.value)} style={{ flex: 1 }} />
           <button className="btn btn-primary" onClick={addPrompt} disabled={busy}>{busy ? 'Adding...' : 'Add Prompt'}</button>
+          <label className="btn" style={{ cursor: 'pointer' }}>
+            {importing ? 'Importing...' : 'Import Peec Prompts CSV'}
+            <input type="file" accept=".csv,.tsv" style={{ display: 'none' }}
+              disabled={importing}
+              onChange={e => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ''; }} />
+          </label>
         </div>
         {msg && <div style={{ fontSize: 11, color: 'var(--emerald)', marginBottom: 6 }}>{msg}</div>}
         {prompts.length === 0 ? (
