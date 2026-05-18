@@ -150,6 +150,14 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup():
+    logger.info("Momentus AI starting — SQLite path: %s", settings.db_path)
+    if not settings.db_path.startswith(("/data", "/var/data", "/mnt/data")):
+        logger.warning(
+            "DB path %s is NOT on a mounted volume. On Railway this means "
+            "every redeploy wipes your data. Mount a volume and set "
+            "GEO_DB_PATH=/data/momentus.db",
+            settings.db_path,
+        )
     logger.info("Initializing Momentus AI database...")
     await init_db()
     logger.info("Initializing auth tables...")

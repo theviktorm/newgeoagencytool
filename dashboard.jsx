@@ -1270,6 +1270,10 @@ function WorkspacesPage({ state, dispatch }) {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: '', slug: '', brand_name: '', brand_voice: '', compliance_rules: '' });
   const [detail, setDetail] = useState(null);
+  const [edit, setEdit] = useState(null);  // mirror of detail while editing
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
 
   const loadWorkspaces = async () => {
     const res = await api('/api/workspaces/', {}, state.token);
@@ -1278,7 +1282,44 @@ function WorkspacesPage({ state, dispatch }) {
 
   const loadDetail = async (wsId) => {
     const res = await api(`/api/workspaces/${wsId}`, {}, state.token);
-    if (res.success) setDetail(res.data);
+    if (res.success) {
+      setDetail(res.data);
+      setEdit(_workspaceToEdit(res.data));
+      setEditing(false); setSaveMsg('');
+    }
+  };
+
+  const saveDetail = async () => {
+    if (!edit || !detail) return;
+    setSaving(true); setSaveMsg('');
+    try {
+      const body = {
+        name: edit.name,
+        brand_name: edit.brand_name,
+        domains: _csvToArray(edit.domains),
+        target_countries: _csvToArray(edit.target_countries),
+        target_languages: _csvToArray(edit.target_languages),
+        target_models: _csvToArray(edit.target_models),
+        brand_voice: edit.brand_voice,
+        compliance_rules: edit.compliance_rules,
+        color_primary: edit.color_primary || undefined,
+        color_accent: edit.color_accent || undefined,
+      };
+      const r = await api(`/api/workspaces/${detail.id}`, {
+        method: 'PUT', body: JSON.stringify(body),
+      }, state.token);
+      if (r.success === false) {
+        setSaveMsg('Save failed: ' + (r.error || 'unknown'));
+      } else {
+        setSaveMsg('Saved.');
+        await loadWorkspaces();
+        await loadDetail(detail.id);
+        setEditing(false);
+      }
+    } catch (e) {
+      setSaveMsg('Save failed: ' + e.message);
+    }
+    setSaving(false);
   };
 
   const handleCreate = async () => {
@@ -1316,34 +1357,80 @@ function WorkspacesPage({ state, dispatch }) {
         </div>
 
         <div className="card">
-          <div className="card-header"><span className="card-title">Workspace Details</span></div>
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="card-title">Workspace Details</span>
+            {detail && (
+              <div style={{ display: 'flex', gap: 6 }}>
+                {!editing && <button className="btn btn-sm" onClick={() => { setEditing(true); setSaveMsg(''); }}>Edit</button>}
+                {editing && <>
+                  <button className="btn btn-sm btn-primary" onClick={saveDetail} disabled={saving}>{saving ? 'Saving...' : 'Save Workspace'}</button>
+                  <button className="btn btn-sm" onClick={() => { setEditing(false); setEdit(_workspaceToEdit(detail)); setSaveMsg(''); }}>Cancel</button>
+                </>}
+              </div>
+            )}
+          </div>
           <div className="card-body">
             {detail ? (
               <div>
-                <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{detail.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 16 }}>{detail.slug}</div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-                  <div><div className="form-label">Brand</div><div style={{ fontSize: 13 }}>{detail.brand_name || '\u2014'}</div></div>
-                  <div><div className="form-label">Domains</div><div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{tryParse(detail.domains)?.join(', ') || '\u2014'}</div></div>
-                  <div><div className="form-label">Countries</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_countries)?.join(', ') || '\u2014'}</div></div>
-                  <div><div className="form-label">Languages</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_languages)?.join(', ') || '\u2014'}</div></div>
-                  <div><div className="form-label">Target Models</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_models)?.join(', ') || '\u2014'}</div></div>
-                </div>
-
-                {detail.brand_voice && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div className="form-label">Brand Voice Rules</div>
-                    <div style={{ fontSize: 12, background: 'var(--bg-raised)', padding: 10, borderRadius: 6, whiteSpace: 'pre-wrap' }}>{detail.brand_voice}</div>
+                {saveMsg && <div style={{ fontSize: 11, color: saveMsg.includes('failed') ? 'var(--rose)' : 'var(--emerald)', marginBottom: 8 }}>{saveMsg}</div>}
+                {!editing ? <>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>{detail.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 16 }}>{detail.slug}</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                    <div><div className="form-label">Brand</div><div style={{ fontSize: 13 }}>{detail.brand_name || '\u2014'}</div></div>
+                    <div><div className="form-label">Domains</div><div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{tryParse(detail.domains)?.join(', ') || '\u2014'}</div></div>
+                    <div><div className="form-label">Countries</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_countries)?.join(', ') || '\u2014'}</div></div>
+                    <div><div className="form-label">Languages</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_languages)?.join(', ') || '\u2014'}</div></div>
+                    <div><div className="form-label">Target Models</div><div style={{ fontSize: 12 }}>{tryParse(detail.target_models)?.join(', ') || '\u2014'}</div></div>
                   </div>
-                )}
-
-                {detail.compliance_rules && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div className="form-label">Compliance / Forbidden Claims</div>
-                    <div style={{ fontSize: 12, background: 'var(--bg-raised)', padding: 10, borderRadius: 6, whiteSpace: 'pre-wrap', color: 'var(--rose)' }}>{detail.compliance_rules}</div>
+                  {detail.brand_voice && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div className="form-label">Brand Voice Rules</div>
+                      <div style={{ fontSize: 12, background: 'var(--bg-raised)', padding: 10, borderRadius: 6, whiteSpace: 'pre-wrap' }}>{detail.brand_voice}</div>
+                    </div>
+                  )}
+                  {detail.compliance_rules && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div className="form-label">Compliance / Forbidden Claims</div>
+                      <div style={{ fontSize: 12, background: 'var(--bg-raised)', padding: 10, borderRadius: 6, whiteSpace: 'pre-wrap', color: 'var(--rose)' }}>{detail.compliance_rules}</div>
+                    </div>
+                  )}
+                </> : <>
+                  <div className="form-group"><label className="form-label">Name</label>
+                    <input className="form-input" value={edit?.name || ''} onChange={e => setEdit({ ...edit, name: e.target.value })} />
                   </div>
-                )}
+                  <div className="form-group"><label className="form-label">Brand name</label>
+                    <input className="form-input" value={edit?.brand_name || ''} onChange={e => setEdit({ ...edit, brand_name: e.target.value })} placeholder="e.g. Aesthetic Klinika" />
+                  </div>
+                  <div className="form-group"><label className="form-label">Domains (comma-separated)</label>
+                    <input className="form-input" value={edit?.domains || ''} onChange={e => setEdit({ ...edit, domains: e.target.value })} placeholder="aestheticklinika.hu, www.aestheticklinika.hu" style={{ fontFamily: 'var(--font-mono)' }} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div className="form-group"><label className="form-label">Countries</label>
+                      <input className="form-input" value={edit?.target_countries || ''} onChange={e => setEdit({ ...edit, target_countries: e.target.value })} placeholder="HU, AT" />
+                    </div>
+                    <div className="form-group"><label className="form-label">Languages</label>
+                      <input className="form-input" value={edit?.target_languages || ''} onChange={e => setEdit({ ...edit, target_languages: e.target.value })} placeholder="hu, en" />
+                    </div>
+                    <div className="form-group"><label className="form-label">Target models</label>
+                      <input className="form-input" value={edit?.target_models || ''} onChange={e => setEdit({ ...edit, target_models: e.target.value })} placeholder="ChatGPT, Perplexity, Gemini" />
+                    </div>
+                  </div>
+                  <div className="form-group"><label className="form-label">Brand voice rules</label>
+                    <textarea className="form-textarea" rows={4} value={edit?.brand_voice || ''} onChange={e => setEdit({ ...edit, brand_voice: e.target.value })} placeholder="Professional, evidence-based, empathetic..." />
+                  </div>
+                  <div className="form-group"><label className="form-label">Compliance / forbidden claims</label>
+                    <textarea className="form-textarea" rows={3} value={edit?.compliance_rules || ''} onChange={e => setEdit({ ...edit, compliance_rules: e.target.value })} placeholder="No medical claims without citations..." />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div className="form-group"><label className="form-label">Primary color</label>
+                      <input className="form-input" value={edit?.color_primary || ''} onChange={e => setEdit({ ...edit, color_primary: e.target.value })} placeholder="#2563EB" />
+                    </div>
+                    <div className="form-group"><label className="form-label">Accent color</label>
+                      <input className="form-input" value={edit?.color_accent || ''} onChange={e => setEdit({ ...edit, color_accent: e.target.value })} placeholder="#10B981" />
+                    </div>
+                  </div>
+                </>}
 
                 <div style={{ marginTop: 16 }}>
                   <div className="form-label" style={{ marginBottom: 8 }}>Team Members ({detail.members?.length || 0})</div>
@@ -1426,6 +1513,28 @@ function tryParse(val) {
   if (Array.isArray(val)) return val;
   if (!val) return [];
   try { return JSON.parse(val); } catch { return []; }
+}
+
+function _workspaceToEdit(d) {
+  if (!d) return null;
+  const arr = (x) => (Array.isArray(x) ? x : (tryParse(x) || []));
+  return {
+    name: d.name || '',
+    brand_name: d.brand_name || '',
+    domains: arr(d.domains).join(', '),
+    target_countries: arr(d.target_countries).join(', '),
+    target_languages: arr(d.target_languages).join(', '),
+    target_models: arr(d.target_models).join(', '),
+    brand_voice: d.brand_voice || '',
+    compliance_rules: d.compliance_rules || '',
+    color_primary: d.color_primary || '',
+    color_accent: d.color_accent || '',
+  };
+}
+
+function _csvToArray(s) {
+  if (!s) return [];
+  return s.split(',').map(x => x.trim()).filter(Boolean);
 }
 
 // ═══════════════════════════════════════════════════════════════

@@ -13,6 +13,28 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
+def _autodetect_db_path() -> str:
+    """Pick the best SQLite path for the host:
+
+      1. If GEO_DB_PATH is set explicitly, honour it.
+      2. Else if a Railway volume is mounted at /data (or /var/data) and
+         writable, put the DB inside it so it survives redeploys.
+      3. Else fall back to the legacy working-directory file.
+    """
+    explicit = os.environ.get("GEO_DB_PATH", "").strip()
+    if explicit:
+        return explicit
+    for candidate in ("/data", "/var/data", "/mnt/data"):
+        try:
+            p = Path(candidate)
+            if p.exists() and os.access(candidate, os.W_OK):
+                p.mkdir(parents=True, exist_ok=True)
+                return str(p / "momentus.db")
+        except Exception:
+            continue
+    return "momentus.db"
+
+
 class Settings(BaseSettings):
     """Central configuration — every setting the engine needs."""
 
@@ -27,11 +49,18 @@ class Settings(BaseSettings):
     cors_origins: str = "*"  # comma-separated in env
 
     # ── Database ──
+    # `db_path` defaults to the Railway volume mount when present so SQLite
+    # survives deploys. Override via GEO_DB_PATH if you mounted somewhere else
+    # (e.g. /var/data/momentus.db). For local dev nothing changes — the
+    # working-directory file is used because /data won't exist.
     database_url: str = Field(
         default="sqlite+aiosqlite:///momentus.db",
         description="SQLite path or Postgres connection string",
     )
-    db_path: str = "momentus.db"  # raw path for aiosqlite
+    db_path: str = Field(
+        default_factory=lambda: _autodetect_db_path(),
+        description="Raw filesystem path used by aiosqlite",
+    )
 
     # ── Peec (legacy REST) ──
     peec_api_key: str = ""
