@@ -158,20 +158,31 @@ async def startup():
             "GEO_DB_PATH=/data/momentus.db",
             settings.db_path,
         )
-    logger.info("Initializing Momentus AI database...")
-    await init_db()
-    # World-class layer init — soft-fail each so a single module bug can't
-    # block boot.
+    # Essential, fast init only — wrapped so a schema/migration hiccup against
+    # an existing production DB can NEVER prevent the container from coming up
+    # and serving /api/health. A crash here makes Railway crash-loop → 502.
+    try:
+        logger.info("Initializing core database + auth...")
+        await init_db()
+        await init_auth()
+        logger.info("Core init complete")
+    except Exception as _e:
+        logger.error("CORE INIT FAILED (continuing degraded): %s", _e, exc_info=True)
+    # World-class layer + background services run AFTER we're serving so they
+    # can never block readiness or crash boot. init is resolved via getattr so
+    # a module without an init() (job_runner, scheduler) can't raise.
     from . import (
         brand_resolver as _br, entity_graph as _eg,
         alert_engine as _ae, job_runner as _jr, scheduler as _sch,
     )
-    for name, fn in (
-        ("brand_resolver", _br.init),
-        ("entity_graph", _eg.init),
-        ("alert_engine", _ae.init),
-        ("job_runner", _jr.init),
+    for name, mod in (
+        ("brand_resolver", _br),
+        ("entity_graph", _eg),
+        ("alert_engine", _ae),
     ):
+        fn = getattr(mod, "init", None)
+        if fn is None:
+            continue
         try:
             await fn()
             logger.info("Initialized %s schema", name)
@@ -187,13 +198,16 @@ async def startup():
         logger.info("Scheduler started")
     except Exception as _e:
         logger.warning("scheduler.start_scheduler failed: %s", _e)
-    logger.info("Initializing auth tables...")
-    await init_auth()
-    logger.info("Initializing automation engine...")
-    await init_automation()
+    try:
+        await init_automation()
+    except Exception as _e:
+        logger.warning("init_automation failed: %s", _e)
     if MCP_AVAILABLE and settings.has_peec_mcp and settings.peec_mcp_auto_sync_minutes > 0:
-        logger.info("Starting Peec MCP auto-sync...")
-        await start_auto_sync()
+        try:
+            await start_auto_sync()
+            logger.info("Peec MCP auto-sync started")
+        except Exception as _e:
+            logger.warning("start_auto_sync failed: %s", _e)
     logger.info("Momentus AI ready on port %s", settings.port)
 
 @app.on_event("shutdown")

@@ -743,16 +743,32 @@ async def _migrate(db: aiosqlite.Connection):
 
 
 async def init_db():
-    """Initialize database schema. Safe to call multiple times."""
+    """Initialize database schema. Safe to call multiple times.
+
+    Each block runs independently so one failing statement (e.g. an index on
+    a column an older production table lacks) can't abort the rest or crash boot.
+    """
+    import logging as _logging
+    _log = _logging.getLogger("geo.database")
     db = await get_db()
-    await db.executescript(SCHEMA)
-    await db.executescript(MCP_SCHEMA)
-    await db.executescript(CONQUER_SCHEMA)
-    await _migrate(db)
-    await db.execute(
-        "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
-        (settings.project_id, settings.project_name),
-    )
+    for _name, _script in (
+        ("SCHEMA", SCHEMA), ("MCP_SCHEMA", MCP_SCHEMA), ("CONQUER_SCHEMA", CONQUER_SCHEMA),
+    ):
+        try:
+            await db.executescript(_script)
+        except Exception as _e:
+            _log.error("init_db: %s block failed: %s", _name, _e)
+    try:
+        await _migrate(db)
+    except Exception as _e:
+        _log.error("init_db: _migrate failed: %s", _e)
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
+            (settings.project_id, settings.project_name),
+        )
+    except Exception as _e:
+        _log.error("init_db: seed project failed: %s", _e)
     await db.commit()
 
 
