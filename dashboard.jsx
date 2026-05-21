@@ -229,43 +229,48 @@ function LoginScreen({ onLogin }) {
 // ═══════════════════════════════════════════════════════════════
 
 const NAV_ITEMS = [
-  // \u2500\u2500 War Room is the new landing page \u2500\u2500
-  { section: 'War Room', items: [
+  // \u2500\u2500 Command Center: daily outcomes \u2500\u2500
+  { section: 'Command Center', items: [
     { id: 'warroom', label: 'Live War Room', icon: '\u25ce' },
     { id: 'battlefield', label: 'Prompt Battlefield', icon: '\u2691' },
     { id: 'revenue', label: 'Revenue Priority', icon: '\u20AC' },
     { id: 'authority', label: 'Authority Score', icon: '\u2605' },
   ]},
   { section: 'Intelligence', items: [
-    { id: 'citation_intel', label: 'Citation Intel', icon: '\u25ce' },
+    { id: 'citation_intel', label: 'Citation Intel', icon: '\u25c8' },
     { id: 'attack_map', label: 'Attack Map', icon: '\u2694' },
     { id: 'graph', label: 'Authority Graph', icon: '\u2042' },
     { id: 'journey', label: 'Buyer Journey', icon: '\u27ff' },
-    { id: 'aio', label: 'AI Overview', icon: '\u25c8' },
+    { id: 'aio', label: 'AI Overview', icon: '\u25C9' },
+    { id: 'competitors', label: 'Competitors', icon: '\u2691' },
   ]},
-  { section: 'Action', items: [
-    { id: 'reddit', label: 'Reddit Command', icon: '\u2634' },
+  { section: 'Execute', items: [
+    { id: 'actions', label: 'Action Engine', icon: '\u2699' },
+    { id: 'content', label: 'Content Studio', icon: '\u270E' },
     { id: 'schema_engine', label: 'Schema Engine', icon: '\u232c' },
     { id: 'metadata_studio', label: 'Metadata Studio', icon: '\u25a7' },
+    { id: 'reddit', label: 'Reddit Command', icon: '\u2634' },
     { id: 'youtube', label: 'YouTube GEO', icon: '\u25b6' },
-    { id: 'content', label: 'Content Studio', icon: '\u270E' },
     { id: 'publishing', label: 'Publishing', icon: '\u21EA' },
   ]},
-  { section: 'Ops', items: [
+  { section: 'Data', items: [
     { id: 'import', label: 'Data Import', icon: '\u21E9' },
     { id: 'sources', label: 'Sources', icon: '\u25C9' },
     { id: 'analysis', label: 'Cluster Analysis', icon: '\u2B21' },
     { id: 'brands', label: 'Brand Manager', icon: '\u24B7' },
+  ]},
+  { section: 'Operations', items: [
     { id: 'alerts', label: 'Alerts', icon: '\u26A0' },
+    { id: 'backtest', label: 'GEO Sandbox', icon: '\u232c' },
     { id: 'report', label: 'Comparative Report', icon: '\u2637' },
     { id: 'jobs', label: 'Job Queue', icon: '\u21BB' },
   ]},
   { section: 'Admin', items: [
     { id: 'workspaces', label: 'Workspaces', icon: '\u2302' },
     { id: 'users', label: 'Team', icon: '\u263A' },
-    { id: 'competitors', label: 'Competitors', icon: '\u2694' },
-    { id: 'audit', label: 'Audit Log', icon: '\u2318' },
+    { id: 'integrations', label: 'Integrations', icon: '\u2630' },
     { id: 'settings', label: 'Settings', icon: '\u2699' },
+    { id: 'audit', label: 'Audit Log', icon: '\u2318' },
   ]},
 ];
 
@@ -5258,6 +5263,326 @@ function ComparativeReportPage({ state }) {
     </div>
   );
 }
+function ActionsPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [actions, setActions] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [expanded, setExpanded] = useState({});
+
+  const load = () => {
+    if (!wsId) return;
+    const qs = statusFilter === 'all' ? '' : `?status=${statusFilter}`;
+    api(`/api/actions/${wsId}${qs}${qs ? '&' : '?'}limit=200`, {}, token).then(r => setActions(r.data || [])).catch(() => {});
+    api(`/api/actions/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => {});
+  };
+  useEffect(load, [wsId, statusFilter]);
+
+  const harvest = async () => {
+    setBusy(true); setMsg('');
+    try { const r = await api(`/api/actions/${wsId}/harvest`, { method: 'POST' }, token); setMsg(`Harvested ${r.data?.created || 0} actions.`); load(); }
+    catch (e) { setMsg('Harvest failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const generate = async (id) => {
+    setBusy(true); setMsg('');
+    try { await api(`/api/actions/${wsId}/${id}/generate`, { method: 'POST' }, token); setExpanded(x => ({ ...x, [id]: true })); load(); }
+    catch (e) { setMsg('Generate failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const setStatus = async (id, status) => {
+    setBusy(true); setMsg('');
+    try { await api(`/api/actions/${wsId}/${id}/status?status=${status}`, { method: 'PUT' }, token); load(); }
+    catch (e) { setMsg('Update failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const priColor = (p) => p >= 70 ? 'rose' : p >= 40 ? 'amber' : 'gray';
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Action Engine — turn diagnosis into done</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <select className="form-input" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ width: 140 }}>
+              <option value="all">all</option>
+              <option value="pending">pending</option>
+              <option value="generated">generated</option>
+              <option value="approved">approved</option>
+              <option value="done">done</option>
+              <option value="dismissed">dismissed</option>
+            </select>
+            <button className="btn btn-sm btn-primary" onClick={harvest} disabled={busy || !wsId}>{busy ? 'Working...' : 'Harvest Actions'}</button>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--rose)' }}>
+            <div className="metric-label">OPEN ACTIONS</div>
+            <div className="metric-value">{summary?.open_actions ?? '—'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--blue)' }}>
+            <div className="metric-label">TOTAL</div>
+            <div className="metric-value">{summary?.total ?? '—'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--amber)' }}>
+            <div className="metric-label">PIPELINE VALUE</div>
+            <div className="metric-value">{summary?.pipeline_value_score ?? '—'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--emerald)' }}>
+            <div className="metric-label">GENERATED</div>
+            <div className="metric-value">{summary?.by_status?.generated ?? 0}</div>
+          </div>
+        </div>
+        {msg && <div style={{ fontSize: 11, marginTop: 8, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
+      </div>
+
+      {actions.length === 0 ? (
+        <div className="card"><div className="empty-state">⚙<br/>No actions yet. Click Harvest Actions to scan your diagnostics.</div></div>
+      ) : actions.map(a => (
+        <div className="card" key={a.id} style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                <span className={`badge ${priColor(a.priority || 0)}`}>{a.action_type}</span>
+                <span className="badge gray">{a.status}</span>
+                {a.estimated_impact != null && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>impact {a.estimated_impact}</span>}
+              </div>
+              <div style={{ fontWeight: 600 }}>{a.title}</div>
+              {a.description && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{a.description}</div>}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              {a.status === 'pending' && <button className="btn btn-sm btn-primary" onClick={() => generate(a.id)} disabled={busy}>Generate</button>}
+              {a.status === 'generated' && <>
+                <button className="btn btn-sm btn-primary" onClick={() => setStatus(a.id, 'approved')} disabled={busy}>Approve</button>
+                <button className="btn btn-sm" onClick={() => setStatus(a.id, 'dismissed')} disabled={busy}>Dismiss</button>
+              </>}
+              {a.status === 'approved' && <button className="btn btn-sm btn-primary" onClick={() => setStatus(a.id, 'done')} disabled={busy}>Mark Done</button>}
+              {a.generated_output && <button className="btn btn-sm" onClick={() => setExpanded(x => ({ ...x, [a.id]: !x[a.id] }))}>{expanded[a.id] ? 'Hide' : 'View'} Output</button>}
+            </div>
+          </div>
+          {a.generated_output && expanded[a.id] && (
+            <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 11, maxHeight: 240, overflow: 'auto', background: 'var(--surface-2)', padding: 10, borderRadius: 6, whiteSpace: 'pre-wrap', margin: 0 }}>{typeof a.generated_output === 'string' ? a.generated_output : JSON.stringify(a.generated_output, null, 2)}</pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GEO SANDBOX — prove the ROI
+// ═══════════════════════════════════════════════════════════════
+
+function BacktestPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [actionCount, setActionCount] = useState(3);
+  const [horizon, setHorizon] = useState(90);
+  const [result, setResult] = useState(null);
+  const [series, setSeries] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    if (!wsId) return;
+    setResult(null);
+    api(`/api/backtest/${wsId}/series?months=6`, {}, token).then(r => setSeries(r.data || [])).catch(() => {});
+  }, [wsId]);
+
+  const project = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/backtest/${wsId}/project?action_count=${actionCount}&horizon_days=${horizon}`, { method: 'POST' }, token);
+      setResult(r.data || r);
+    } catch (e) { setMsg('Projection failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const maxScore = Math.max(1, ...series.map(s => s.total_score || 0));
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>GEO Sandbox — prove the ROI</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input className="form-input" type="number" value={actionCount} min={1} onChange={e => setActionCount(parseInt(e.target.value, 10) || 1)} title="action count" style={{ width: 80 }} />
+            <select className="form-input" value={horizon} onChange={e => setHorizon(parseInt(e.target.value, 10))} style={{ width: 110 }}>
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days</option>
+              <option value={180}>180 days</option>
+            </select>
+            <button className="btn btn-sm btn-primary" onClick={project} disabled={busy || !wsId}>{busy ? 'Running...' : 'Run Projection'}</button>
+          </div>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: 'var(--rose)' }}>{msg}</div>}
+        {series.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Historical authority ({series.length} pts)</div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 60 }}>
+              {series.map((s, i) => (
+                <div key={i} title={`${s.date}: ${Math.round(s.total_score || 0)}${s.source !== 'measured' ? ' (~)' : ''}`}
+                  style={{ flex: 1, height: `${((s.total_score || 0) / maxScore) * 100}%`, minHeight: 2, background: s.source === 'measured' ? 'var(--blue)' : 'var(--border-subtle)', borderRadius: 2 }} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {!result ? (
+        <div className="card"><div className="empty-state">⌬<br/>Run a projection to model the ROI of your next actions.</div></div>
+      ) : (
+        <>
+          <div className="card">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+              <div className="metric-card" style={{ borderTop: '2px solid var(--blue)' }}>
+                <div className="metric-label">BASELINE SCORE</div>
+                <div className="metric-value">{Math.round(result.baseline_score || 0)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: '2px solid var(--emerald)' }}>
+                <div className="metric-label">PROJECTED SCORE</div>
+                <div className="metric-value" style={{ color: 'var(--emerald)' }}>{Math.round(result.projected_score || 0)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: '2px solid var(--emerald)' }}>
+                <div className="metric-label">LIFT ({result.horizon_days || horizon}d)</div>
+                <div className="metric-value" style={{ color: 'var(--emerald)' }}>+{(result.lift || 0).toFixed(1)}</div>
+              </div>
+            </div>
+          </div>
+
+          {result.narrative && (
+            <div className="card" style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(99,102,241,0.04))' }}>
+              <div style={{ fontStyle: 'italic', fontSize: 15, color: 'var(--text-secondary)' }}>{result.narrative}</div>
+            </div>
+          )}
+
+          {Array.isArray(result.per_action) && result.per_action.length > 0 && (
+            <div className="card">
+              <div className="card-header">Per-action projection</div>
+              <table className="data-table"><thead><tr>
+                <th>Prompt</th><th>Current</th><th>Projected</th><th>€ Revenue</th><th>Contribution</th>
+              </tr></thead><tbody>{result.per_action.map((p, i) => (
+                <tr key={i}>
+                  <td style={{ fontSize: 11 }}>{p.prompt_text}</td>
+                  <td>{Math.round(p.current_our_score || 0)}</td>
+                  <td style={{ color: 'var(--emerald)', fontWeight: 600 }}>{Math.round(p.projected_our_score || 0)}</td>
+                  <td>€{Math.round(p.revenue_eur || 0).toLocaleString()}</td>
+                  <td>{(p.contribution_to_lift || 0).toFixed(1)}</td>
+                </tr>
+              ))}</tbody></table>
+            </div>
+          )}
+
+          {result.assumptions && (
+            <div className="card">
+              <div className="card-header">Assumptions</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: 'var(--text-muted)' }}>
+                {Object.entries(result.assumptions).map(([k, v]) => (
+                  <li key={k}>{k}: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INTEGRATIONS & HEALTH
+// ═══════════════════════════════════════════════════════════════
+
+function IntegrationsPage() {
+  const { token } = useContext(AuthContext);
+  const [status, setStatus] = useState(null);
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    api(`/api/integrations/status`, {}, token).then(r => setStatus(r.data || r)).catch(() => {});
+    api(`/api/health/deep`, {}, token).then(r => setHealth(r.data || r)).catch(() => {});
+  }, []);
+
+  const integrations = (status?.integrations || []).slice().sort((a, b) => {
+    const aTop = a.required && !a.configured ? 0 : 1;
+    const bTop = b.required && !b.configured ? 0 : 1;
+    if (aTop !== bTop) return aTop - bTop;
+    return (a.configured === b.configured) ? 0 : (a.configured ? 1 : -1);
+  });
+  const dbOk = health?.db === 'ok' || health?.db === true;
+  const tracking = status?.tracking_mode;
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Integrations &amp; Health</span>
+          {tracking && <span className={`badge ${tracking === 'live' ? 'emerald' : 'amber'}`}>{tracking}</span>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="metric-card" style={{ borderTop: `2px solid ${dbOk ? 'var(--emerald)' : 'var(--rose)'}` }}>
+            <div className="metric-label">DATABASE</div>
+            <div className="metric-value" style={{ color: dbOk ? 'var(--emerald)' : 'var(--rose)', fontSize: 18 }}>{dbOk ? 'ok' : 'error'}</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{health?.db_path || '—'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--blue)' }}>
+            <div className="metric-label">TABLES</div>
+            <div className="metric-value">{Array.isArray(health?.tables) ? health.tables.length : (health?.tables ?? '—')}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: `2px solid ${health?.db_writable ? 'var(--emerald)' : 'var(--amber)'}` }}>
+            <div className="metric-label">WRITABLE</div>
+            <div className="metric-value" style={{ fontSize: 18 }}>{health?.db_writable ? 'yes' : 'no'}</div>
+          </div>
+          <div className="metric-card" style={{ borderTop: '2px solid var(--emerald)' }}>
+            <div className="metric-label">CONFIGURED</div>
+            <div className="metric-value">{summaryConfigured(status)}</div>
+          </div>
+        </div>
+        {status?.summary?.required_missing?.length > 0 && (
+          <div style={{ fontSize: 12, color: 'var(--rose)', marginTop: 8 }}>⚠ Required missing: {status.summary.required_missing.join(', ')}</div>
+        )}
+      </div>
+
+      {integrations.length === 0 ? (
+        <div className="card"><div className="empty-state">☰<br/>No integration data.</div></div>
+      ) : (
+        <div className="card">
+          <div className="card-header">Integrations</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+            {integrations.map(it => (
+              <div key={it.key} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontWeight: 600 }}>{it.label}</span>
+                  {it.required && <span className="badge amber" style={{ fontSize: 9 }}>required</span>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: it.configured ? 'var(--emerald)' : 'var(--text-muted)', display: 'inline-block' }} />
+                  <span style={{ fontSize: 12, color: it.configured ? 'var(--emerald)' : 'var(--text-muted)' }}>{it.configured ? 'Connected' : 'Not connected'}</span>
+                  {it.category && <span className="badge gray" style={{ fontSize: 9, marginLeft: 'auto' }}>{it.category}</span>}
+                </div>
+                {it.unlocks && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Unlocks: {Array.isArray(it.unlocks) ? it.unlocks.join(', ') : it.unlocks}</div>}
+                {!it.configured && it.hint && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{it.hint}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function summaryConfigured(status) {
+  if (!status?.summary) return '—';
+  return `${status.summary.configured ?? 0} / ${status.summary.total ?? 0}`;
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN APP
@@ -5318,6 +5643,7 @@ function App() {
     journey: BuyerJourneyPage,
     aio: AioOverviewPage,
     // ── Action ──
+    actions: ActionsPage,
     reddit: RedditCommandPage,
     schema_engine: SchemaEnginePage,
     metadata_studio: MetadataStudioPage,
@@ -5330,12 +5656,14 @@ function App() {
     analysis: AnalysisPage,
     brands: BrandManagerPage,
     alerts: AlertsPage,
+    backtest: BacktestPage,
     report: ComparativeReportPage,
     jobs: JobQueuePage,
     // ── Admin ──
     workspaces: WorkspacesPage,
     users: UsersPage,
     competitors: CompetitorsPage,
+    integrations: IntegrationsPage,
     audit: AuditPage,
     settings: SettingsPage,
   };

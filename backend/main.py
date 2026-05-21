@@ -174,11 +174,14 @@ async def startup():
     from . import (
         brand_resolver as _br, entity_graph as _eg,
         alert_engine as _ae, job_runner as _jr, scheduler as _sch,
+        action_engine as _act, backtest as _bt,
     )
     for name, mod in (
         ("brand_resolver", _br),
         ("entity_graph", _eg),
         ("alert_engine", _ae),
+        ("action_engine", _act),
+        ("backtest", _bt),
     ):
         fn = getattr(mod, "init", None)
         if fn is None:
@@ -572,6 +575,8 @@ from . import (
     # World-class layer
     scheduler, job_runner, brand_resolver, entity_graph,
     alert_engine, badge, comparative_report,
+    # Action + trust + ops layer
+    action_engine, backtest, integrations_status,
 )
 from fastapi.responses import Response
 
@@ -1106,6 +1111,74 @@ async def public_badge(slug: str, style: str = "flat"):
 async def public_badge_page(slug: str):
     html = await badge.badge_html(slug)
     return HTMLResponse(html, headers={"Cache-Control": "public, max-age=300"})
+
+
+# ─── Action Engine (diagnosis → executable Do-It queue) ────────
+
+@app.post("/api/actions/{ws_id}/harvest")
+async def actions_harvest(ws_id: str):
+    """Scan all diagnostics and materialize pending actions."""
+    res = await action_engine.harvest_actions(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/actions/{ws_id}")
+async def actions_list(ws_id: str, status: str = "", action_type: str = "", limit: int = 200):
+    rows = await action_engine.list_actions(ws_id, status=status, action_type=action_type, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/actions/{ws_id}/summary")
+async def actions_summary(ws_id: str):
+    res = await action_engine.queue_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/actions/{ws_id}/{action_id}/generate")
+async def actions_generate(ws_id: str, action_id: str):
+    """Produce the deliverable for one action via Claude."""
+    res = await action_engine.generate_action(action_id)
+    return ApiResponse(data=res, success=not res.get("error")).dict()
+
+
+@app.put("/api/actions/{ws_id}/{action_id}/status")
+async def actions_set_status(ws_id: str, action_id: str, status: str):
+    res = await action_engine.update_status(action_id, status)
+    return ApiResponse(data=res).dict()
+
+
+# ─── GEO Sandbox / Backtest (prove ROI) ───────────────────────
+
+@app.get("/api/backtest/{ws_id}/series")
+async def backtest_series(ws_id: str, months: int = 6):
+    rows = await backtest.historical_authority_series(ws_id, months=months)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/backtest/{ws_id}/project")
+async def backtest_project(ws_id: str, action_count: int = 3, horizon_days: int = 90):
+    res = await backtest.project_uplift(ws_id, action_count=action_count, horizon_days=horizon_days)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/backtest/{ws_id}/runs")
+async def backtest_runs(ws_id: str, limit: int = 50):
+    rows = await backtest.list_runs(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+# ─── Integration status + deep health ─────────────────────────
+
+@app.get("/api/integrations/status")
+async def integrations_status_route():
+    res = await integrations_status.integration_status()
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/health/deep")
+async def health_deep_route():
+    res = await integrations_status.health_deep()
+    return ApiResponse(data=res).dict()
 
 
 @app.get("/api/peec/field-mapping")
