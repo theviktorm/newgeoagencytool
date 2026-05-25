@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -53,8 +53,12 @@ class Settings(BaseSettings):
     # survives deploys. Override via GEO_DB_PATH if you mounted somewhere else
     # (e.g. /var/data/momentus.db). For local dev nothing changes — the
     # working-directory file is used because /data won't exist.
+    # Read from GEO_DATABASE_URL (env_prefix) OR a bare DATABASE_URL so common
+    # PaaS conventions (Railway/Heroku set DATABASE_URL) work out of the box.
+    # SQLite default is unchanged: empty/sqlite values keep the SQLite path.
     database_url: str = Field(
         default="sqlite+aiosqlite:///momentus.db",
+        validation_alias=AliasChoices("GEO_DATABASE_URL", "DATABASE_URL"),
         description="SQLite path or Postgres connection string",
     )
     db_path: str = Field(

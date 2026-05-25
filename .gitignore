@@ -34,3 +34,9 @@ build/
 # Logs
 *.log
 .venv/
+
+# Frontend build (Vite). The bundle is produced at Docker build time; node_modules
+# and the local npm cache must never be committed. dist/ is already ignored above.
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/dist/

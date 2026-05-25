@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .config import settings
+from . import db_driver  # optional Postgres driver; SQLite path never touches it
 
 DB_PATH = settings.db_path
 
@@ -284,6 +285,10 @@ _db_lock = asyncio.Lock()
 
 async def get_db() -> aiosqlite.Connection:
     """Get the shared database connection (lazy-initialized, reused)."""
+    # ── Postgres path (OFF by default; only when DATABASE_URL is postgres://) ──
+    if db_driver._is_postgres():
+        return db_driver._PGConnectionProxy()
+    # ── SQLite path (UNCHANGED) ──
     global _db_pool
     if _db_pool is None or not _db_pool._running:
         async with _db_lock:
@@ -300,6 +305,11 @@ async def get_db() -> aiosqlite.Connection:
 
 async def close_db():
     """Close the shared connection (call on shutdown)."""
+    # ── Postgres path: close the asyncpg pool ──
+    if db_driver._is_postgres():
+        await db_driver.close_pool()
+        return
+    # ── SQLite path (UNCHANGED) ──
     global _db_pool
     if _db_pool and _db_pool._running:
         await _db_pool.close()
@@ -750,6 +760,28 @@ async def init_db():
     """
     import logging as _logging
     _log = _logging.getLogger("geo.database")
+    # ── Postgres path: apply pg_schema.sql via the pool, then return. We do
+    #    NOT run the SQLite executescript DDL on Postgres. ──
+    if db_driver._is_postgres():
+        import os as _os
+        pool = await db_driver.get_pool()
+        _schema_path = _os.path.join(_os.path.dirname(__file__), "pg_schema.sql")
+        with open(_schema_path, "r", encoding="utf-8") as _fh:
+            _pg_sql = _fh.read()
+        async with pool.acquire() as _conn:
+            try:
+                await _conn.execute(_pg_sql)
+            except Exception as _e:
+                _log.error("init_db: pg_schema.sql failed: %s", _e)
+        try:
+            await db_driver.execute(
+                "INSERT OR IGNORE INTO projects (id, name) VALUES (?, ?)",
+                (settings.project_id, settings.project_name),
+            )
+        except Exception as _e:
+            _log.error("init_db: seed project (pg) failed: %s", _e)
+        return
+    # ── SQLite path (UNCHANGED) ──
     db = await get_db()
     for _name, _script in (
         ("SCHEMA", SCHEMA), ("MCP_SCHEMA", MCP_SCHEMA), ("CONQUER_SCHEMA", CONQUER_SCHEMA),
@@ -783,6 +815,8 @@ def gen_id(prefix: str = "") -> str:
 # ═══════════════════════════════════════════════════════════════
 
 async def fetch_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    if db_driver._is_postgres():
+        return await db_driver.fetch_one(query, params)
     db = await get_db()
     cursor = await db.execute(query, params)
     row = await cursor.fetchone()
@@ -790,6 +824,8 @@ async def fetch_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
 
 
 async def fetch_all(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    if db_driver._is_postgres():
+        return await db_driver.fetch_all(query, params)
     db = await get_db()
     cursor = await db.execute(query, params)
     rows = await cursor.fetchall()
@@ -797,6 +833,8 @@ async def fetch_all(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
 
 
 async def execute(query: str, params: tuple = ()) -> int:
+    if db_driver._is_postgres():
+        return await db_driver.execute(query, params)
     db = await get_db()
     cursor = await db.execute(query, params)
     await db.commit()
@@ -804,6 +842,8 @@ async def execute(query: str, params: tuple = ()) -> int:
 
 
 async def execute_many(query: str, params_list: List[tuple]) -> int:
+    if db_driver._is_postgres():
+        return await db_driver.execute_many(query, params_list)
     db = await get_db()
     await db.executemany(query, params_list)
     await db.commit()

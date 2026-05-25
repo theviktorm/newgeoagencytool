@@ -80,6 +80,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Observability — structured logs (opt-in via GEO_LOG_FORMAT=json), optional
+# Sentry (SENTRY_DSN), per-request timing + X-Request-ID. Never raises.
+try:
+    from .observability import setup_observability
+    setup_observability(app)
+except Exception as _obs_e:  # pragma: no cover
+    logger.warning("observability setup skipped: %s", _obs_e)
+
 # ═══════════════════════════════════════════════════════════════
 # RATE LIMITING (sliding window, bounded memory)
 # ═══════════════════════════════════════════════════════════════
@@ -288,6 +296,19 @@ async def serve_dashboard_jsx():
         return FileResponse(jsx, media_type="application/javascript",
                             headers=_NO_CACHE_HEADERS)
     raise HTTPException(404, "dashboard.jsx not found")
+
+@app.get("/dist/{asset_path:path}")
+async def serve_dist(asset_path: str):
+    """Serve the Vite production bundle when present. index.html HEAD-probes
+    /dist/dashboard.bundle.js and uses it if found, else falls back to Babel.
+    A missing dist simply 404s here (safe — fallback handles it)."""
+    target = (_FRONTEND_DIR / "dist" / asset_path).resolve()
+    dist_root = (_FRONTEND_DIR / "dist").resolve()
+    # Path-traversal guard
+    if not str(target).startswith(str(dist_root)) or not target.exists():
+        raise HTTPException(404, "asset not found")
+    media = "application/javascript" if target.suffix == ".js" else None
+    return FileResponse(target, media_type=media)
 
 @app.get("/api/health")
 async def health():

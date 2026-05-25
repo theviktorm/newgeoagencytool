@@ -11,6 +11,11 @@ python-multipart==0.0.17
 # Database
 aiosqlite==0.20.0
 
+# Optional Postgres driver — only used when DATABASE_URL is postgres://.
+# Import is lazy in backend/db_driver.py, so a missing wheel never breaks
+# the default SQLite path.
+asyncpg==0.29.0
+
 # HTTP client (async) — 0.27+ supports anyio 4
 httpx==0.27.2
 
