@@ -743,6 +743,12 @@ async def _migrate(db: aiosqlite.Connection):
         "ALTER TABLE sources ADD COLUMN last_seen_at TEXT",
         # Source attribution: which prompt(s) cited this URL
         "ALTER TABLE sources ADD COLUMN sample_prompts TEXT DEFAULT '[]'",
+        # Explainability Phase 1: provenance + nuanced ownership on prompts
+        "ALTER TABLE prompts ADD COLUMN source TEXT DEFAULT 'unknown'",
+        "ALTER TABLE prompts ADD COLUMN confidence TEXT DEFAULT 'estimated'",
+        "ALTER TABLE prompts ADD COLUMN ownership_level INTEGER DEFAULT 0",
+        "ALTER TABLE prompts ADD COLUMN ownership_status TEXT DEFAULT ''",
+        "ALTER TABLE prompts ADD COLUMN last_tracked_at TEXT",
     ]
     for sql in migrations:
         try:

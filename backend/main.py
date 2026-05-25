@@ -598,6 +598,8 @@ from . import (
     alert_engine, badge, comparative_report,
     # Action + trust + ops layer
     action_engine, backtest, integrations_status,
+    # Explainability layer (Phase 1)
+    metric_dictionary, ownership,
 )
 from fastapi.responses import Response
 
@@ -659,6 +661,36 @@ async def prompt_track_workspace(ws_id: str, only_high_value: bool = True, max_p
 @app.get("/api/prompts/{ws_id}/battlefield")
 async def prompts_battlefield(ws_id: str):
     res = await prompt_engine.battlefield_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Explainability: Metric Dictionary ─────────────────────────
+
+@app.get("/api/metrics/dictionary")
+async def metrics_dictionary_list():
+    rows = metric_dictionary.all_metrics()
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/metrics/dictionary/{key}")
+async def metrics_dictionary_get(key: str):
+    m = metric_dictionary.get_metric(key)
+    if m is None:
+        raise HTTPException(404, f"unknown metric '{key}'")
+    return ApiResponse(data=m).dict()
+
+
+# ─── Explainability: Nuanced Ownership ─────────────────────────
+
+@app.get("/api/ownership/{ws_id}/distribution")
+async def ownership_distribution_route(ws_id: str):
+    res = await ownership.ownership_distribution(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/ownership/{ws_id}/prompt/{prompt_id}")
+async def ownership_prompt_route(ws_id: str, prompt_id: str):
+    res = await ownership.compute_prompt_ownership(ws_id, prompt_id)
     return ApiResponse(data=res).dict()
 
 
@@ -737,6 +769,12 @@ async def revenue_priority_route(ws_id: str, top_n: int = 10):
 @app.post("/api/revenue/{ws_id}/push-recs")
 async def revenue_push_recs(ws_id: str, top_n: int = 5):
     res = await revenue_priority.push_recommendations(ws_id, top_n=top_n)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/revenue/{ws_id}/breakdown/{prompt_id}")
+async def revenue_breakdown_route(ws_id: str, prompt_id: str):
+    res = await revenue_priority.revenue_breakdown(ws_id, prompt_id)
     return ApiResponse(data=res).dict()
 
 
@@ -895,6 +933,12 @@ async def authority_latest(ws_id: str):
 async def authority_ts(ws_id: str, subject_domain: str, months: int = 12):
     rows = await authority_score.timeseries(ws_id, subject_domain, months=months)
     return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/authority/{ws_id}/breakdown")
+async def authority_breakdown_route(ws_id: str, subject_domain: str = ""):
+    res = await authority_score.authority_breakdown(ws_id, subject_domain=subject_domain)
+    return ApiResponse(data=res).dict()
 
 
 # ─── 11. YouTube GEO Optimizer ─────────────────────────────────

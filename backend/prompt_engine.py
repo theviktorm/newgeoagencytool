@@ -60,11 +60,18 @@ async def upsert_prompt(
     target_url: str = "",
     cluster_id: str = "",
     classify: bool = True,
+    source: str = "manual",
+    confidence: str = "estimated",
 ) -> Dict[str, Any]:
     """Create or update a prompt; returns the persisted row.
 
     `classify=True` runs the LLM/heuristic classifier; pass False if you're
     bulk-importing and will classify later in batches.
+
+    `source` / `confidence` record provenance (e.g. source='peec_import',
+    confidence='imported'). They default to manual/estimated so existing callers
+    keep working unchanged. On update of an existing prompt they only overwrite
+    when a non-empty value is passed.
     """
     text = (text or "").strip()
     if not text:
@@ -75,13 +82,15 @@ async def upsert_prompt(
         (workspace_id, text),
     )
     if existing:
-        if target_brand or target_url or cluster_id:
+        if target_brand or target_url or cluster_id or source or confidence:
             await execute(
                 "UPDATE prompts SET target_brand = COALESCE(NULLIF(?,''), target_brand), "
                 "target_url = COALESCE(NULLIF(?,''), target_url), "
                 "cluster_id = COALESCE(NULLIF(?,''), cluster_id), "
+                "source = COALESCE(NULLIF(?,''), source), "
+                "confidence = COALESCE(NULLIF(?,''), confidence), "
                 "updated_at = datetime('now') WHERE id = ?",
-                (target_brand, target_url, cluster_id, existing["id"]),
+                (target_brand, target_url, cluster_id, source, confidence, existing["id"]),
             )
         return await fetch_one("SELECT * FROM prompts WHERE id = ?", (existing["id"],))
 
@@ -89,8 +98,9 @@ async def upsert_prompt(
     classification = classify_prompt_heuristic(text)
     await execute(
         "INSERT INTO prompts (id, workspace_id, text, prompt_type, buyer_stage, "
-        "revenue_score, target_brand, target_url, cluster_id, classifier_meta) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "revenue_score, target_brand, target_url, cluster_id, classifier_meta, "
+        "source, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pid, workspace_id, text,
             classification["prompt_type"],
@@ -98,6 +108,7 @@ async def upsert_prompt(
             classification["revenue_score"],
             target_brand, target_url, cluster_id,
             to_json({"source": "heuristic", **classification}),
+            source or "manual", confidence or "estimated",
         ),
     )
     if classify:

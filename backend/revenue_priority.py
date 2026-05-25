@@ -179,6 +179,122 @@ async def score_cluster(workspace_id: str, cluster_id: str) -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# EXPLAINABILITY — single-prompt factor breakdown
+# ═══════════════════════════════════════════════════════════════
+
+# Buyer-stage revenue weights from the product spec. Late-funnel prompts are
+# worth more per win. Covers the prompt_engine stages plus purchase/booking
+# variants used in higher-intent imports.
+STAGE_WEIGHTS = {
+    "awareness": 0.4,
+    "consideration": 0.7,
+    "problem": 0.7,
+    "solution": 0.7,
+    "comparison": 1.0,
+    "trust": 1.2,
+    "objection": 1.2,
+    "decision": 1.4,
+    "purchase": 1.6,
+    "booking": 1.6,
+}
+
+# How much revenue is recoverable given current ownership. 1.0 = everything to
+# gain (we're invisible / lost), 0.0 = nothing left (we already own it).
+OWNERSHIP_GAP = {
+    "not_visible": 1.0,
+    "mentioned": 0.8,
+    "listed": 0.6,
+    "top3": 0.4,
+    "recommended": 0.2,
+    "owned": 0.0,
+    "co_owned": 0.3,
+    "lost": 1.0,
+}
+
+
+async def revenue_breakdown(workspace_id: str, prompt_id: str) -> Dict[str, Any]:
+    """Full ESTIMATED factor breakdown for ONE prompt — the 'show your work'
+    view behind a prompt's revenue number. Every figure is heuristic.
+
+    final_revenue_estimate = base_value × stage_weight × ownership_gap_factor
+                             × (1 + competitor_strength)
+    """
+    p = await fetch_one(
+        "SELECT * FROM prompts WHERE workspace_id = ? AND id = ?",
+        (workspace_id, prompt_id),
+    )
+    if not p:
+        return {
+            "workspace_id": workspace_id, "prompt_id": prompt_id,
+            "found": False, "confidence": "estimated",
+            "formula_text": "No such prompt.",
+        }
+
+    roll = await fetch_one(
+        "SELECT * FROM prompt_ownership WHERE workspace_id = ? AND prompt_id = ?",
+        (workspace_id, prompt_id),
+    )
+    our_score = float((roll or {}).get("our_score") or 0)
+    leader_score = float((roll or {}).get("leader_score") or 0)
+
+    # Resolve the nuanced ownership status (drives the ownership-gap factor).
+    try:
+        from . import ownership as _own
+        view = await _own.compute_prompt_ownership(workspace_id, prompt_id)
+        status = view.get("status") or "not_visible"
+        data_source = view.get("confidence") or "estimated"
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("ownership view failed in revenue_breakdown: %s", e)
+        status = "not_visible"
+        data_source = "estimated"
+
+    buyer_stage = p.get("buyer_stage") or "awareness"
+    stage_weight = STAGE_WEIGHTS.get(buyer_stage, 1.0)
+    base_value = float(DEFAULT_VALUE_BY_STAGE.get(buyer_stage, 50))
+    estimated_customer_value = _value_eur(p)
+
+    ownership_gap_factor = OWNERSHIP_GAP.get(status, 1.0)
+    ownership_gap = ownership_gap_factor  # alias kept for the API surface
+
+    # Competitor strength: how dominant the leader is (0..1), boosts the prize
+    # of taking the prompt from them.
+    competitor_strength = min(1.0, leader_score / 100.0) if leader_score else 0.0
+
+    final_revenue_estimate = round(
+        base_value * stage_weight * ownership_gap_factor * (1.0 + competitor_strength), 2
+    )
+    # Priority blends the recoverable value with how lost we are.
+    priority_score = round(
+        float(p.get("revenue_score") or 0) * (1 - our_score / 100.0) * stage_weight, 2
+    )
+
+    return {
+        "workspace_id": workspace_id,
+        "prompt_id": prompt_id,
+        "found": True,
+        "text": p.get("text", ""),
+        "base_value": base_value,
+        "buyer_stage": buyer_stage,
+        "stage_weight": stage_weight,
+        "ownership_status": status,
+        "ownership_gap": ownership_gap,
+        "ownership_gap_factor": ownership_gap_factor,
+        "competitor_strength": round(competitor_strength, 3),
+        "estimated_customer_value": round(estimated_customer_value, 2),
+        "final_revenue_estimate": final_revenue_estimate,
+        "priority_score": priority_score,
+        "confidence": "estimated",
+        "data_source": data_source,
+        "formula_text": (
+            "ESTIMATED. final_revenue_estimate = base_value (€%s, from buyer-stage table) "
+            "× stage_weight (%s) × ownership_gap_factor (%s, status=%s) "
+            "× (1 + competitor_strength %s). All factors are heuristic, not measured conversions."
+            % (base_value, stage_weight, ownership_gap_factor, status, round(competitor_strength, 3))
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════════════════════════
 

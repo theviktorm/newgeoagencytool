@@ -109,6 +109,150 @@ async def latest(workspace_id: str) -> Dict[str, Any]:
     return {"scores": rows}
 
 
+# Per-component presentation metadata for the breakdown view.
+# (label, metric_dictionary key, recommended fix, qualitative effort/impact)
+_COMPONENT_META = {
+    "citation_score": (
+        "Citation Score", "citation_score",
+        "Refresh content + land citations on pages AI already pulls from.", "medium",
+    ),
+    "prompt_ownership_score": (
+        "Prompt Ownership", "prompt_ownership_level",
+        "Track top-revenue prompts and target the lost ones with decision content.", "high",
+    ),
+    "schema_score": (
+        "Schema Depth", "faq_depth",
+        "Implement Physician + Review + FAQ schema on decision pages.", "fast",
+    ),
+    "offsite_score": (
+        "Off-site Authority", "source_quality",
+        "Land PR mentions on trusted publisher domains.", "high",
+    ),
+    "reddit_score": (
+        "Reddit Authority", "citation_quality",
+        "Seed credible Reddit discussions in target subreddits.", "medium",
+    ),
+    "entity_score": (
+        "Entity Consistency", "entity_score",
+        "Tighten brand-entity consistency: Organization/Person schema, sameAs, NAP.", "fast",
+    ),
+    "local_score": (
+        "Local Authority", "local_authority",
+        "Strengthen LocalBusiness schema + Google Business signals.", "medium",
+    ),
+}
+
+# Rough effort ranking: lower = quicker to move.
+_EFFORT_RANK = {"fast": 0, "medium": 1, "high": 2}
+
+
+async def authority_breakdown(workspace_id: str, subject_domain: str = "") -> Dict[str, Any]:
+    """Per-component breakdown of our (or a given domain's) GEO Authority Score.
+
+    Reads the latest authority_scores row, then for each of the 7 sub-scores
+    returns its score, weight, weighted contribution, plain-English meaning
+    (from metric_dictionary), confidence, a recommended fix, and a qualitative
+    estimated impact. Also surfaces the biggest_lever / fastest_win / hardest_gap.
+    """
+    # Resolve our domain if none supplied (same logic as compute_for_workspace).
+    if not subject_domain:
+        ws = await fetch_one(
+            "SELECT brand_name, name, domains FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        )
+        brand = ((ws or {}).get("brand_name") or (ws or {}).get("name") or "").lower()
+        domain = ""
+        try:
+            ds = (ws or {}).get("domains") or "[]"
+            if isinstance(ds, str):
+                ds = json.loads(ds)
+            if isinstance(ds, list) and ds:
+                domain = str(ds[0]).lower().lstrip("www.")
+        except Exception:
+            domain = ""
+        subject_domain = domain or brand
+
+    row = None
+    if subject_domain:
+        row = await fetch_one(
+            "SELECT * FROM authority_scores WHERE workspace_id = ? AND subject_domain = ? "
+            "ORDER BY observed_at DESC LIMIT 1",
+            (workspace_id, subject_domain.lower()),
+        )
+    if not row:
+        # No authority computed yet — return an empty-but-shaped result.
+        return {
+            "workspace_id": workspace_id,
+            "subject_domain": subject_domain,
+            "found": False,
+            "total": 0.0,
+            "components": [],
+            "biggest_lever": None,
+            "fastest_win": None,
+            "hardest_gap": None,
+        }
+
+    try:
+        from . import metric_dictionary as _md
+    except Exception:  # pragma: no cover - defensive
+        _md = None
+
+    components: List[Dict[str, Any]] = []
+    for key, weight in WEIGHTS.items():
+        score = float(row.get(key) or 0)
+        contribution = round(score * weight, 4)
+        label, md_key, fix, effort = _COMPONENT_META.get(
+            key, (key, key, _why(key), "medium")
+        )
+        meaning = ""
+        confidence = "estimated"
+        if _md is not None:
+            m = _md.get_metric(md_key)
+            if m:
+                meaning = m.get("definition", "")
+                confidence = m.get("confidence", "estimated")
+        # Estimated impact: how many total points we could gain if this
+        # component went to 100 (i.e. headroom × weight).
+        estimated_impact = round((100.0 - score) * weight, 2)
+        components.append({
+            "key": key,
+            "label": label,
+            "score": round(score, 2),
+            "weight": weight,
+            "contribution": contribution,
+            "meaning": meaning,
+            "confidence": confidence,
+            "recommended_fix": fix,
+            "estimated_impact": estimated_impact,
+            "effort": effort,
+        })
+
+    total = round(float(row.get("total_score") or sum(c["contribution"] for c in components)), 2)
+
+    # biggest_lever: most total points to gain (headroom × weight).
+    biggest_lever = max(components, key=lambda c: c["estimated_impact"]) if components else None
+    # fastest_win: best estimated_impact among the lowest-effort components.
+    fastest_win = None
+    if components:
+        fastest_win = min(
+            components,
+            key=lambda c: (_EFFORT_RANK.get(c["effort"], 1), -c["estimated_impact"]),
+        )
+    # hardest_gap: lowest raw score (most behind), regardless of effort.
+    hardest_gap = min(components, key=lambda c: c["score"]) if components else None
+
+    return {
+        "workspace_id": workspace_id,
+        "subject_domain": subject_domain,
+        "found": True,
+        "total": total,
+        "components": components,
+        "biggest_lever": biggest_lever,
+        "fastest_win": fastest_win,
+        "hardest_gap": hardest_gap,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════
 # COMPUTATION
 # ═══════════════════════════════════════════════════════════════

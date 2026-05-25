@@ -268,6 +268,8 @@ async def _process_row(
         target_brand=target_brand_lc,
         cluster_id=cluster_id,
         classify=False,  # bulk import; reclassify_workspace handles it after
+        source="peec_import",
+        confidence="imported",
     )
     summary["prompts_upserted"] += 1
     prompt_id = upserted["id"]

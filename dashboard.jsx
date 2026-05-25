@@ -268,6 +268,7 @@ const NAV_ITEMS = [
   { section: 'Admin', items: [
     { id: 'workspaces', label: 'Workspaces', icon: '\u2302' },
     { id: 'users', label: 'Team', icon: '\u263A' },
+    { id: 'metrics', label: 'Metric Dictionary', icon: '?' },
     { id: 'integrations', label: 'Integrations', icon: '\u2630' },
     { id: 'settings', label: 'Settings', icon: '\u2699' },
     { id: 'audit', label: 'Audit Log', icon: '\u2318' },
@@ -489,6 +490,323 @@ function DonutChart({ segments, size = 140 }) {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 600 }}>{total}</div>
         <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Total</div>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EXPLAINABILITY — Phase 1 reusable components
+// ═══════════════════════════════════════════════════════════════
+
+// Module-level cache so metric definitions are fetched once per session.
+const _metricDictCache = {};
+
+function _titleCase(s) {
+  return String(s || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// 1. ConfidenceBadge — small pill mapping a confidence/source level to a color.
+const CONFIDENCE_COLORS = {
+  verified: 'var(--emerald)',
+  manually_confirmed: 'var(--emerald)',
+  imported: 'var(--blue)',
+  claude_analyzed: 'var(--purple)',
+  scraped: 'var(--cyan)',
+  estimated: 'var(--amber)',
+  seeded: 'var(--amber)',
+  stale: 'var(--text-muted)',
+  needs_review: 'var(--text-muted)',
+  error: 'var(--rose)',
+};
+
+function ConfidenceBadge({ level }) {
+  const key = String(level || 'estimated').toLowerCase();
+  const color = CONFIDENCE_COLORS[key] || 'var(--text-muted)';
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', padding: '1px 7px',
+      borderRadius: 9, fontSize: 9, fontWeight: 600, fontFamily: 'var(--font-mono)',
+      letterSpacing: '0.02em', color, background: `${color}22`, whiteSpace: 'nowrap',
+    }}>{_titleCase(key)}</span>
+  );
+}
+
+// 2. OwnershipLevelBadge — 0–5 level + label, colored by status.
+const OWNERSHIP_LEVELS = {
+  not_visible: 0, mentioned: 1, listed: 2, top3: 3, co_owned: 4,
+  recommended: 4, owned: 5, lost: 0, volatile: 2, emerging: 1,
+};
+const OWNERSHIP_COLORS = {
+  owned: 'var(--emerald)', recommended: 'var(--emerald)', co_owned: 'var(--cyan)',
+  top3: 'var(--blue)', listed: 'var(--amber)', mentioned: 'var(--amber)',
+  not_visible: 'var(--text-muted)', lost: 'var(--rose)', volatile: 'var(--purple)',
+  emerging: 'var(--amber)',
+};
+
+function OwnershipLevelBadge({ level, status }) {
+  const key = String(status || level || '').toLowerCase();
+  if (!key) {
+    return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>;
+  }
+  const color = OWNERSHIP_COLORS[key] || 'var(--text-muted)';
+  const num = level != null && !isNaN(Number(level)) ? Number(level) : (OWNERSHIP_LEVELS[key] ?? '—');
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 7px',
+      borderRadius: 9, fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+      color, background: `${color}22`, whiteSpace: 'nowrap',
+    }}>
+      <b style={{ fontSize: 11 }}>L{num}</b>
+      <span>{_titleCase(key)}</span>
+    </span>
+  );
+}
+
+// 3. MetricTooltip — "?" icon that opens a modal explaining a metric.
+function MetricTooltip({ metricKey }) {
+  const { token } = useContext(AuthContext);
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(_metricDictCache[metricKey] || null);
+  const [error, setError] = useState('');
+  const loading = open && !data && !error;
+
+  useEffect(() => {
+    if (!open || data || error) return;
+    if (_metricDictCache[metricKey]) { setData(_metricDictCache[metricKey]); return; }
+    let cancelled = false;
+    api(`/api/metrics/dictionary/${metricKey}`, {}, token)
+      .then(r => {
+        const d = r.data || r;
+        _metricDictCache[metricKey] = d;
+        if (!cancelled) setData(d);
+      })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [open, metricKey, token]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = e => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  return (
+    <React.Fragment>
+      <sup
+        onClick={e => { e.stopPropagation(); setOpen(true); }}
+        title="What is this?"
+        style={{
+          cursor: 'help', marginLeft: 3, fontSize: 9, fontWeight: 700,
+          color: 'var(--text-muted)', border: '1px solid var(--border-default)',
+          borderRadius: '50%', width: 13, height: 13, display: 'inline-flex',
+          alignItems: 'center', justifyContent: 'center', lineHeight: 1, userSelect: 'none',
+        }}
+      >?</sup>
+      {open && (
+        <div className="modal-overlay" onClick={() => setOpen(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{data ? data.name : _titleCase(metricKey)}</h3>
+              <button className="modal-close" onClick={() => setOpen(false)}>{'×'}</button>
+            </div>
+            <div className="modal-body">
+              {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>}
+              {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+              {data && (
+                <div style={{ display: 'grid', gap: 12, fontSize: 12 }}>
+                  <div style={{ color: 'var(--text-secondary)', lineHeight: 1.55 }}>{data.definition}</div>
+                  {data.formula && (
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Formula</div>
+                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--cyan)', background: 'var(--bg-raised)', padding: '6px 8px', borderRadius: 4, display: 'block', whiteSpace: 'pre-wrap' }}>{data.formula}</code>
+                    </div>
+                  )}
+                  {(data.data_sources || []).length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Data sources</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {data.data_sources.map(s => <span key={s} className="badge">{s}</span>)}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {data.refresh_frequency && (
+                      <div><span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Refresh: </span><span style={{ color: 'var(--text-secondary)' }}>{data.refresh_frequency}</span></div>
+                    )}
+                    {data.confidence && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Confidence</span>
+                        <ConfidenceBadge level={data.confidence} />
+                      </div>
+                    )}
+                  </div>
+                  {data.low_score_meaning && (
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>What a low score means</div>
+                      <div style={{ color: 'var(--text-secondary)', lineHeight: 1.55 }}>{data.low_score_meaning}</div>
+                    </div>
+                  )}
+                  {data.recommended_action && (
+                    <div style={{ borderLeft: '2px solid var(--emerald)', paddingLeft: 10 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Recommended action</div>
+                      <div style={{ color: 'var(--text-primary)', lineHeight: 1.55 }}>{data.recommended_action}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
+// 4. RevenueLogicModal — explains how a revenue estimate was derived for a prompt.
+function RevenueLogicModal({ wsId, promptId, onClose }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId || !promptId) return;
+    let cancelled = false;
+    api(`/api/revenue/${wsId}/breakdown/${promptId}`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, promptId, token]);
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose && onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const eur = v => `€${Math.round(Number(v) || 0).toLocaleString()}`;
+  const row = (label, value, opts = {}) => (
+    <tr style={opts.bold ? { borderTop: '1px solid var(--border-default)' } : null}>
+      <td style={{ padding: '6px 8px', color: opts.bold ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: opts.bold ? 700 : 400 }}>{label}</td>
+      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: opts.bold ? 700 : 500, color: opts.color || 'var(--text-primary)' }}>{value}</td>
+    </tr>
+  );
+
+  return (
+    <div className="modal-overlay" onClick={() => onClose && onClose()}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Revenue logic</h3>
+          <button className="modal-close" onClick={() => onClose && onClose()}>{'×'}</button>
+        </div>
+        <div className="modal-body">
+          <div style={{ fontSize: 10, color: 'var(--amber)', marginBottom: 10, fontStyle: 'italic' }}>
+            Estimated — not real conversion data.
+          </div>
+          {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>}
+          {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+          {data && (
+            <React.Fragment>
+              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                <tbody>
+                  {row('Base value', eur(data.base_value))}
+                  {row(`Buyer stage — ${data.buyer_stage || '—'}`, `×${(Number(data.stage_weight) || 0).toFixed(2)}`)}
+                  {row('Ownership gap', `×${(Number(data.ownership_gap_factor) || 0).toFixed(2)}`)}
+                  {row('Competitor strength', data.competitor_strength != null ? String(data.competitor_strength) : '—')}
+                  {row('Estimated customer value', eur(data.estimated_customer_value))}
+                  {row('→ Final revenue estimate', eur(data.final_revenue_estimate), { bold: true, color: 'var(--amber)' })}
+                  {row('Priority score', data.priority_score != null ? Math.round(data.priority_score) : '—')}
+                </tbody>
+              </table>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Confidence</span>
+                <ConfidenceBadge level={data.confidence} />
+                {data.data_source && <span className="badge">{data.data_source}</span>}
+              </div>
+              {data.formula_text && (
+                <code style={{ display: 'block', marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-raised)', padding: '8px 10px', borderRadius: 4, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{data.formula_text}</code>
+              )}
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 5. ScoreBreakdownCard — full authority-score decomposition with levers.
+function ScoreBreakdownCard({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setData(null); setError('');
+    api(`/api/authority/${wsId}/breakdown`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, token]);
+
+  const total = data ? Math.round(((data.found || 0) / (data.total || 1)) * 100) : null;
+  const components = (data && data.components) || [];
+
+  return (
+    <div className="card">
+      <div className="card-header">Score breakdown — how your Authority Score is built</div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading breakdown…</div>}
+      {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+      {data && components.length === 0 && !loading && (
+        <div className="empty-state">★<br/>No breakdown yet. Compute the Authority Score first.</div>
+      )}
+      {data && components.length > 0 && (
+        <React.Fragment>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14 }}>
+            <span style={{ fontSize: 36, fontWeight: 700, color: total >= 70 ? 'var(--emerald)' : total >= 40 ? 'var(--amber)' : 'var(--rose)' }}>
+              {data.found != null && data.total != null ? `${data.found}/${data.total}` : '—'}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>components present</span>
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {components.map(c => {
+              const score = Math.round(Number(c.score) || 0);
+              const weight = Math.round((Number(c.weight) || 0) * (Number(c.weight) <= 1 ? 100 : 1));
+              const barColor = score >= 60 ? 'var(--emerald)' : score >= 30 ? 'var(--amber)' : 'var(--rose)';
+              return (
+                <div key={c.key} style={{ padding: 10, background: 'var(--bg-raised)', borderRadius: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 12 }}>
+                      {c.label}<MetricTooltip metricKey={c.key} />
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: barColor }}>{score}/100</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>· {weight}% wt</span>
+                      <ConfidenceBadge level={c.confidence} />
+                    </span>
+                  </div>
+                  <div style={{ height: 5, background: 'var(--border-subtle)', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
+                    <div style={{ height: '100%', width: `${score}%`, background: barColor, borderRadius: 3 }} />
+                  </div>
+                  {c.recommended_fix && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>→ {c.recommended_fix}{c.estimated_impact ? ` (${c.estimated_impact})` : ''}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+            {data.biggest_lever && <span className="badge purple">Biggest lever: {data.biggest_lever}</span>}
+            {data.fastest_win && <span className="badge emerald">Fastest win: {data.fastest_win}</span>}
+            {data.hardest_gap && <span className="badge rose">Hardest gap: {data.hardest_gap}</span>}
+          </div>
+        </React.Fragment>
+      )}
     </div>
   );
 }
@@ -4071,13 +4389,19 @@ function PromptBattlefieldPage({ state }) {
           <div className="empty-state">⚑<br/>No prompts yet. Add the questions you want AI to recommend you for.</div>
         ) : (
           <table className="data-table"><thead><tr>
-            <th>Prompt</th><th>Type</th><th>Stage</th><th>Revenue</th><th>Status</th>
+            <th>Prompt</th><th>Type</th><th>Stage</th>
+            <th>Revenue <MetricTooltip metricKey="prompt_revenue" /></th>
+            <th>Ownership <MetricTooltip metricKey="prompt_ownership_level" /></th>
+            <th>Source</th><th>Confidence</th><th>Status</th>
           </tr></thead><tbody>{prompts.slice(0, 200).map(p => (
             <tr key={p.id}>
               <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.text}</td>
               <td><span className="badge">{p.prompt_type}</span></td>
               <td><span className={`badge ${stageColor[p.buyer_stage] || 'gray'}`}>{p.buyer_stage}</span></td>
               <td style={{ fontWeight: 600, color: p.revenue_score >= 70 ? 'var(--emerald)' : p.revenue_score >= 40 ? 'var(--amber)' : 'var(--text-muted)' }}>{Math.round(p.revenue_score || 0)}</td>
+              <td><OwnershipLevelBadge level={p.ownership_level} status={p.ownership_status} /></td>
+              <td>{p.source || '—'}</td>
+              <td><ConfidenceBadge level={p.confidence || 'estimated'} /></td>
               <td><span className="badge">{p.status}</span></td>
             </tr>
           ))}</tbody></table>
@@ -4287,6 +4611,7 @@ function RevenuePriorityPage({ state }) {
   const [summary, setSummary] = useState(null);
   const [recs, setRecs] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [whyPrompt, setWhyPrompt] = useState(null);
 
   const load = () => {
     if (!wsId) return;
@@ -4307,7 +4632,7 @@ function RevenuePriorityPage({ state }) {
         <div className="card-header">Revenue Priority — money over volume</div>
         {summary && (
           <div className="metrics-grid">
-            <div className="metric-card"><div className="metric-label">€ PIPELINE AT STAKE</div><div className="metric-value">€{Math.round(summary.estimated_pipeline_eur || 0).toLocaleString()}</div></div>
+            <div className="metric-card"><div className="metric-label">€ PIPELINE AT STAKE <MetricTooltip metricKey="pipeline_at_stake" /></div><div className="metric-value">€{Math.round(summary.estimated_pipeline_eur || 0).toLocaleString()}</div></div>
             <div className="metric-card"><div className="metric-label">€ WON</div><div className="metric-value" style={{ color: 'var(--emerald)' }}>€{Math.round(summary.won_eur || 0).toLocaleString()}</div></div>
             <div className="metric-card"><div className="metric-label">€ LOST</div><div className="metric-value" style={{ color: 'var(--rose)' }}>€{Math.round(summary.lost_eur || 0).toLocaleString()}</div></div>
             <div className="metric-card"><div className="metric-label">PROMPTS WON</div><div className="metric-value">{summary.won_count || 0}</div></div>
@@ -4325,7 +4650,10 @@ function RevenuePriorityPage({ state }) {
           <div key={r.prompt_id} style={{ padding: 10, borderBottom: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
               <div style={{ fontWeight: 600 }}>{i + 1}. {r.text}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>€{Math.round(r.estimated_value_eur).toLocaleString()}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button className="btn btn-sm" onClick={() => setWhyPrompt(r.prompt_id || r.id)}>Why?</button>
+                <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>€{Math.round(r.estimated_value_eur).toLocaleString()}</div>
+              </div>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>
               <span className="badge">{r.buyer_stage}</span> our: {Math.round(r.our_score)}/100 · leader: {r.leader_domain || '—'} · priority: {Math.round(r.priority)}
@@ -4334,6 +4662,7 @@ function RevenuePriorityPage({ state }) {
           </div>
         ))}
       </div>
+      {whyPrompt && <RevenueLogicModal wsId={wsId} promptId={whyPrompt} onClose={() => setWhyPrompt(null)} />}
     </div>
   );
 }
@@ -4709,13 +5038,14 @@ function AuthorityScorePage({ state }) {
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>GEO Authority Score™</span>
+          <span>GEO Authority Score™ <MetricTooltip metricKey="authority_score" /></span>
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn btn-sm btn-primary" onClick={compute} disabled={busy}>Compute Us</button>
             <button className="btn btn-sm" onClick={rebuild} disabled={busy}>Rebuild All (incl. competitors)</button>
           </div>
         </div>
       </div>
+      <ScoreBreakdownCard wsId={wsId} />
       {latest.length === 0 ? <div className="empty-state">★<br/>No score yet. Click Compute.</div> : latest.map(s => (
         <div key={s.id} className="card">
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -4837,6 +5167,7 @@ function WarRoomPage({ state }) {
   const [rev, setRev] = useState(null);
   const [auth, setAuth] = useState([]);
   const [recent, setRecent] = useState([]);
+  const [dist, setDist] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const load = () => {
@@ -4845,6 +5176,7 @@ function WarRoomPage({ state }) {
     api(`/api/revenue/${wsId}/summary`, {}, token).then(r => setRev(r.data || r)).catch(() => {});
     api(`/api/authority/${wsId}/latest`, {}, token).then(r => setAuth((r.data || r).scores || [])).catch(() => {});
     api(`/api/alerts/${wsId}/events?limit=15`, {}, token).then(r => setRecent(r.data || [])).catch(() => {});
+    api(`/api/ownership/${wsId}/distribution`, {}, token).then(r => setDist(r.data || r)).catch(() => {});
   };
   useEffect(load, [wsId]);
   useEffect(() => {
@@ -4891,6 +5223,29 @@ function WarRoomPage({ state }) {
         </div>
       </div>
 
+      <div className="card">
+        <div className="card-header">Ownership distribution</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { key: 'not_visible', label: 'Not visible' },
+            { key: 'mentioned', label: 'Mentioned' },
+            { key: 'listed', label: 'Listed' },
+            { key: 'top3', label: 'Top 3' },
+            { key: 'recommended', label: 'Recommended' },
+            { key: 'owned', label: 'Owned' },
+            { key: 'co_owned', label: 'Co-owned' },
+            { key: 'lost', label: 'Lost' },
+            { key: 'volatile', label: 'Volatile' },
+            { key: 'emerging', label: 'Emerging' },
+          ].map(c => (
+            <div key={c.key} className="metric-card" style={{ minWidth: 92, padding: 8, textAlign: 'center' }}>
+              <div className="metric-label" style={{ fontSize: 9 }}>{c.label}</div>
+              <div className="metric-value" style={{ fontSize: 18 }}>{(dist && (dist[c.key] ?? 0)) || 0}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
         <div className="card">
           <div className="card-header">Top dominators (high-value prompts)</div>
@@ -4915,6 +5270,82 @@ function WarRoomPage({ state }) {
           )))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// METRIC DICTIONARY
+// ═══════════════════════════════════════════════════════════════
+
+function MetricDictionaryPage({ state }) {
+  const { token } = useContext(AuthContext);
+  const [metrics, setMetrics] = useState(null);
+  const [error, setError] = useState('');
+  const [q, setQ] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    api(`/api/metrics/dictionary`, {}, token)
+      .then(r => { if (!cancelled) setMetrics(r.data || r || []); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const loading = metrics === null && !error;
+  const filtered = (metrics || []).filter(m => {
+    if (!q.trim()) return true;
+    const hay = `${m.name} ${m.definition} ${m.metric_key}`.toLowerCase();
+    return hay.includes(q.trim().toLowerCase());
+  });
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Metric Dictionary — what every number means</span>
+          {metrics && <span className="badge blue">{metrics.length} metrics</span>}
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Plain-English definitions, formulas, data sources and the action to take when a score is low.
+        </p>
+        <input className="form-input" placeholder="Search metrics…" value={q} onChange={e => setQ(e.target.value)} style={{ marginTop: 8 }} />
+      </div>
+
+      {loading && <div className="card"><div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading metrics…</div></div>}
+      {error && <div className="card"><div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div></div>}
+      {metrics && filtered.length === 0 && !loading && (
+        <div className="empty-state">{'?'}<br/>No metrics match “{q}”.</div>
+      )}
+
+      {filtered.map(m => (
+        <div key={m.metric_key} className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{m.name}</span>
+            <ConfidenceBadge level={m.confidence} />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.55 }}>{m.definition}</div>
+          {m.formula && (
+            <code style={{ display: 'block', marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--cyan)', background: 'var(--bg-raised)', padding: '6px 8px', borderRadius: 4, whiteSpace: 'pre-wrap' }}>{m.formula}</code>
+          )}
+          {(m.data_sources || []).length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              {m.data_sources.map(s => <span key={s} className="badge">{s}</span>)}
+              {m.refresh_frequency && <span className="badge purple">{m.refresh_frequency}</span>}
+            </div>
+          )}
+          {m.low_score_meaning && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+              <b style={{ color: 'var(--text-secondary)' }}>Low score:</b> {m.low_score_meaning}
+            </div>
+          )}
+          {m.recommended_action && (
+            <div style={{ fontSize: 12, color: 'var(--text-primary)', marginTop: 6, borderLeft: '2px solid var(--emerald)', paddingLeft: 10 }}>
+              → {m.recommended_action}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -5636,6 +6067,7 @@ function App() {
     battlefield: PromptBattlefieldPage,
     revenue: RevenuePriorityPage,
     authority: AuthorityScorePage,
+    metrics: MetricDictionaryPage,
     // ── Intelligence ──
     citation_intel: CitationIntelPage,
     attack_map: AttackMapPage,
