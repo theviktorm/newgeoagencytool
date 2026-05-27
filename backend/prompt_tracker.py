@@ -94,6 +94,107 @@ async def track_workspace(
     max_prompts: int = 50,
     models: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
+    """Bulk-track a workspace AND log a tracking_runs row (start + finish with
+    deltas vs the previous run). Never fails silently: even a pure Peec-replay
+    run (no live model keys) records a row with data_source='peec_replay',
+    confidence='estimated', and a clear note.
+
+    The actual tracking work lives in `_track_workspace_impl`; this wrapper only
+    adds run accounting.
+    """
+    import time as _time
+
+    started_ms = _time.monotonic()
+    run_id = gen_id("trkr-")
+    models_used = [m for m in (models or list(SUPPORTED_MODELS)) if m in SUPPORTED_MODELS]
+    data_source = _data_source_for_models(models_used)
+
+    # Snapshot ownership BEFORE the run so we can compute win/loss deltas.
+    before = await _ownership_snapshot(workspace_id)
+    before_citations = await _citation_count(workspace_id)
+    before_aio = await _aio_count(workspace_id)
+
+    # Open the run row immediately (proves the engine started).
+    try:
+        await execute(
+            "INSERT INTO tracking_runs (id, workspace_id, started_at, "
+            "models_checked, data_source, confidence, notes) "
+            "VALUES (?, ?, datetime('now'), ?, ?, ?, ?)",
+            (run_id, workspace_id, to_json(models_used), data_source,
+             "estimated", "run started"),
+        )
+    except Exception as e:  # pragma: no cover - logging table best-effort
+        logger.warning("tracking_runs insert failed: %s", e)
+
+    errors = 0
+    result: Dict[str, Any] = {}
+    try:
+        result = await _track_workspace_impl(
+            workspace_id, only_high_value=only_high_value,
+            max_prompts=max_prompts, models=models,
+        )
+        for d in (result.get("details") or []):
+            if not d.get("ok"):
+                errors += 1
+    except Exception as e:
+        errors += 1
+        result = {"tracked": 0, "with_our_brand": 0, "details": [],
+                  "error": str(e)}
+        logger.warning("track_workspace impl failed: %s", e)
+
+    # Snapshot AFTER + compute deltas (best-effort; 0 + note on failure).
+    after = await _ownership_snapshot(workspace_id)
+    after_citations = await _citation_count(workspace_id)
+    after_aio = await _aio_count(workspace_id)
+    new_wins, new_losses, delta_note = _ownership_deltas(before, after)
+    citation_changes = abs(after_citations - before_citations)
+    aio_changes = abs(after_aio - before_aio)
+
+    duration_ms = int((_time.monotonic() - started_ms) * 1000)
+    prompts_checked = int(result.get("tracked") or 0)
+
+    # Confidence: verified if any non-replay live model key drove the run.
+    confidence = "verified" if data_source == "live" else (
+        "estimated" if data_source == "peec_replay" else "estimated"
+    )
+    note_bits = [delta_note] if delta_note else []
+    if data_source == "peec_replay":
+        note_bits.append(
+            "No live model API keys configured — results synthesised from Peec "
+            "MCP replay (mention_events). Treat as estimated."
+        )
+    elif data_source == "mixed":
+        note_bits.append("Mixed live + Peec-replay observations.")
+    if result.get("error"):
+        note_bits.append("impl error: " + str(result["error"])[:200])
+    note = " ".join(note_bits) or "ok"
+
+    try:
+        await execute(
+            "UPDATE tracking_runs SET finished_at = datetime('now'), "
+            "prompts_checked = ?, new_losses = ?, new_wins = ?, "
+            "citation_changes = ?, aio_changes = ?, errors = ?, "
+            "duration_ms = ?, data_source = ?, confidence = ?, notes = ? "
+            "WHERE id = ?",
+            (prompts_checked, new_losses, new_wins, citation_changes,
+             aio_changes, errors, duration_ms, data_source, confidence,
+             note, run_id),
+        )
+    except Exception as e:  # pragma: no cover
+        logger.warning("tracking_runs update failed: %s", e)
+
+    result["run_id"] = run_id
+    result["data_source"] = data_source
+    result["confidence"] = confidence
+    return result
+
+
+async def _track_workspace_impl(
+    workspace_id: str,
+    only_high_value: bool = True,
+    max_prompts: int = 50,
+    models: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Bulk-track every (or every high-value) prompt for a workspace."""
     where = "WHERE workspace_id = ? AND status != 'ignored'"
     args: List[Any] = [workspace_id]
@@ -508,3 +609,128 @@ def _domain(url: str) -> str:
 def _env(name: str) -> str:
     import os
     return os.environ.get(name, "")
+
+
+# ═══════════════════════════════════════════════════════════════
+# TRACK-ALL LOGGING (Explainability Phase 2)
+# ═══════════════════════════════════════════════════════════════
+
+def _data_source_for_models(models: List[str]) -> str:
+    """Decide whether a run is 'live', 'peec_replay', or 'mixed' based on which
+    model API keys are actually configured.
+
+    - claude is live iff anthropic_api_key is set.
+    - chatgpt/perplexity/gemini/google_aio are live iff their respective key is
+      configured (settings attr or env var); otherwise they fall back to Peec
+      replay inside the adapters.
+    """
+    live, replay = 0, 0
+    for m in models:
+        if _model_has_live_key(m):
+            live += 1
+        else:
+            replay += 1
+    if live and replay:
+        return "mixed"
+    if live:
+        return "live"
+    return "peec_replay"
+
+
+def _model_has_live_key(model: str) -> bool:
+    if model == "claude":
+        return bool(settings.anthropic_api_key)
+    if model == "chatgpt":
+        return bool(getattr(settings, "openai_api_key", "") or _env("OPENAI_API_KEY"))
+    if model == "perplexity":
+        return bool(getattr(settings, "perplexity_api_key", "") or _env("PERPLEXITY_API_KEY"))
+    if model == "gemini":
+        return bool(getattr(settings, "google_api_key", "") or _env("GOOGLE_API_KEY") or _env("GEMINI_API_KEY"))
+    if model == "google_aio":
+        return bool(getattr(settings, "serpapi_key", "") or _env("SERPAPI_KEY"))
+    return False
+
+
+async def _ownership_snapshot(workspace_id: str) -> Dict[str, Dict[str, float]]:
+    """{prompt_id: {our, leader}} from prompt_ownership for delta computation."""
+    rows = await fetch_all(
+        "SELECT prompt_id, our_score, leader_score FROM prompt_ownership "
+        "WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    return {
+        r["prompt_id"]: {
+            "our": float(r.get("our_score") or 0),
+            "leader": float(r.get("leader_score") or 0),
+        }
+        for r in rows
+    }
+
+
+def _is_won(state: Dict[str, float]) -> bool:
+    return state["our"] >= 50 and state["our"] >= state["leader"] and state["our"] > 0
+
+
+def _is_lost(state: Dict[str, float]) -> bool:
+    return state["leader"] > state["our"] and state["leader"] > 0
+
+
+def _ownership_deltas(
+    before: Dict[str, Dict[str, float]],
+    after: Dict[str, Dict[str, float]],
+) -> Tuple[int, int, str]:
+    """Return (new_wins, new_losses, note) comparing before/after ownership.
+
+    A new win = a prompt that flipped into 'won' state this run; a new loss =
+    flipped into 'lost'. Prompts with no prior snapshot count if they land
+    directly in won/lost. Best-effort: returns (0, 0, note) if data is missing.
+    """
+    if not after:
+        return 0, 0, "no ownership data after run (delta=0)"
+    new_wins, new_losses = 0, 0
+    for pid, aft in after.items():
+        bef = before.get(pid)
+        won_now, lost_now = _is_won(aft), _is_lost(aft)
+        if bef is None:
+            if won_now:
+                new_wins += 1
+            elif lost_now:
+                new_losses += 1
+            continue
+        if won_now and not _is_won(bef):
+            new_wins += 1
+        if lost_now and not _is_lost(bef):
+            new_losses += 1
+    if not before:
+        return new_wins, new_losses, "first run for workspace (no prior baseline)"
+    return new_wins, new_losses, ""
+
+
+async def _citation_count(workspace_id: str) -> int:
+    row = await fetch_one(
+        "SELECT COUNT(*) AS n FROM prompt_observations WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    return int((row or {}).get("n") or 0)
+
+
+async def _aio_count(workspace_id: str) -> int:
+    row = await fetch_one(
+        "SELECT COUNT(*) AS n FROM aio_tracking WHERE workspace_id = ? "
+        "AND aio_present = 1",
+        (workspace_id,),
+    )
+    return int((row or {}).get("n") or 0)
+
+
+async def list_tracking_runs(workspace_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Recent tracking runs for the workspace, newest first. Decodes the
+    models_checked JSON for the dashboard. Defensive: returns [] on empty."""
+    rows = await fetch_all(
+        "SELECT * FROM tracking_runs WHERE workspace_id = ? "
+        "ORDER BY started_at DESC LIMIT ?",
+        (workspace_id, int(limit)),
+    )
+    for r in rows:
+        r["models_checked"] = from_json(r.get("models_checked") or "[]", [])
+    return rows

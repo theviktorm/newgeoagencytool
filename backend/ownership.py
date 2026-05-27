@@ -301,3 +301,185 @@ async def ownership_distribution(workspace_id: str) -> Dict[str, Any]:
         "total_prompts": total,
         "distribution": buckets,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# EMERGING LOGIC (Explainability Phase 2)
+# ═══════════════════════════════════════════════════════════════
+
+# Sub-types of "emerging" — a prompt that's in flux / up for grabs.
+EMERGING_SUBTYPES = (
+    "new_prompt", "rising_intent", "no_clear_winner",
+    "aio_emerging", "competitor_emerging", "revenue_emerging",
+)
+
+
+def _recent(created_at: Optional[str], days: int = 14) -> bool:
+    """True if created_at is within the last `days` days (best-effort parse)."""
+    if not created_at:
+        return False
+    from datetime import datetime
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(str(created_at)[:19], fmt)
+            return (datetime.utcnow() - dt).days <= days
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
+def emerging_subtype(
+    prompt_row: Dict[str, Any],
+    ownership_row: Optional[Dict[str, Any]],
+    volatility: Optional[float] = None,
+) -> Optional[str]:
+    """Classify the flavour of "emerging" for a prompt, or None if it is not
+    emerging at all.
+
+    Rules (evaluated in order; first match wins):
+
+      new_prompt          — created within 14 days AND fewer than 2 observations
+                            recorded (we simply haven't measured it yet).
+      revenue_emerging    — high revenue_score (>= 60) but ownership is unstable:
+                            volatility >= 0.5 OR (our_score < 50 AND leader_score
+                            < 50). High-value land grab.
+      no_clear_winner     — leader_score < 40 AND our_score < 40 (nobody owns it).
+      aio_emerging        — a Google AI Overview is present for the prompt but
+                            our_brand is not yet in it (aio_observations > 0 and
+                            our AIO presence is 0).
+      rising_intent       — observation count increased recently (>=2 obs in the
+                            last 14 days) while ownership is still low (our_score
+                            < 50). Demand is climbing before anyone owns it.
+      competitor_emerging — a competitor is gaining (leader_score between 40 and
+                            70, climbing) while we stay low (our_score < 40).
+      None                — prompt is settled (clearly owned or clearly lost).
+    """
+    our = float((ownership_row or {}).get("our_score") or 0)
+    leader = float((ownership_row or {}).get("leader_score") or 0)
+    rev = float(prompt_row.get("revenue_score") or 0)
+    obs_count = int(prompt_row.get("_obs_count") or 0)
+    recent_obs = int(prompt_row.get("_recent_obs_count") or 0)
+    aio_obs = int(prompt_row.get("_aio_obs_count") or 0)
+    aio_ours = int(prompt_row.get("_aio_our_count") or 0)
+    vol = float(volatility) if volatility is not None else 0.0
+
+    if _recent(prompt_row.get("created_at")) and obs_count < 2:
+        return "new_prompt"
+    if rev >= 60 and (vol >= 0.5 or (our < 50 and leader < 50)):
+        return "revenue_emerging"
+    if leader < 40 and our < 40:
+        return "no_clear_winner"
+    if aio_obs > 0 and aio_ours == 0:
+        return "aio_emerging"
+    if recent_obs >= 2 and our < 50:
+        return "rising_intent"
+    if 40 <= leader < 70 and our < 40:
+        return "competitor_emerging"
+    return None
+
+
+def _why_emerging(subtype: str, prompt_row: Dict[str, Any],
+                  ownership_row: Optional[Dict[str, Any]]) -> str:
+    leader = (ownership_row or {}).get("leader_domain") or "a competitor"
+    rev = float(prompt_row.get("revenue_score") or 0)
+    return {
+        "new_prompt": "Freshly added and barely measured — track it to learn the field.",
+        "rising_intent": "Demand is climbing across recent observations while no one owns the answer yet.",
+        "no_clear_winner": "Neither we nor any competitor strongly owns this — open land grab.",
+        "aio_emerging": "A Google AI Overview is forming for this prompt and we are not in it yet.",
+        "competitor_emerging": f"{leader} is gaining ground here while we stay low — act before they lock it in.",
+        "revenue_emerging": f"High estimated value (revenue_score {round(rev)}) with unstable ownership — prioritise.",
+    }.get(subtype, "Emerging opportunity.")
+
+
+async def _prompt_volatility(prompt_id: str) -> float:
+    """Spread of our_brand_position across recent observations, normalised 0..1.
+    0 = stable, 1 = wildly swinging. Best-effort; 0 when too little data."""
+    rows = await fetch_all(
+        "SELECT our_brand_position FROM prompt_observations WHERE prompt_id = ? "
+        "ORDER BY observed_at DESC LIMIT 12",
+        (prompt_id,),
+    )
+    positions = [int(r.get("our_brand_position") or 0) for r in rows]
+    positions = [p for p in positions if p > 0]
+    if len(positions) < 2:
+        return 0.0
+    spread = max(positions) - min(positions)
+    # Normalise: a spread of 5 positions or more -> fully volatile.
+    return min(1.0, spread / 5.0)
+
+
+async def emerging_prompts(workspace_id: str) -> List[Dict[str, Any]]:
+    """Return every prompt that qualifies as emerging, with its subtype + why.
+
+    Defensive: empty workspace -> []. Never raises.
+    """
+    prompts = await fetch_all(
+        "SELECT * FROM prompts WHERE workspace_id = ?", (workspace_id,)
+    )
+    if not prompts:
+        return []
+    ownership = {
+        r["prompt_id"]: r
+        for r in await fetch_all(
+            "SELECT * FROM prompt_ownership WHERE workspace_id = ?", (workspace_id,)
+        )
+    }
+    # Observation counts per prompt (total, recent, AIO) in one pass each.
+    obs_counts = {
+        r["prompt_id"]: int(r["n"])
+        for r in await fetch_all(
+            "SELECT prompt_id, COUNT(*) AS n FROM prompt_observations "
+            "WHERE workspace_id = ? GROUP BY prompt_id",
+            (workspace_id,),
+        )
+    }
+    recent_counts = {
+        r["prompt_id"]: int(r["n"])
+        for r in await fetch_all(
+            "SELECT prompt_id, COUNT(*) AS n FROM prompt_observations "
+            "WHERE workspace_id = ? AND observed_at >= datetime('now', '-14 days') "
+            "GROUP BY prompt_id",
+            (workspace_id,),
+        )
+    }
+    aio_total = {
+        r["prompt_id"]: int(r["n"])
+        for r in await fetch_all(
+            "SELECT prompt_id, COUNT(*) AS n FROM aio_tracking "
+            "WHERE workspace_id = ? AND aio_present = 1 GROUP BY prompt_id",
+            (workspace_id,),
+        )
+    }
+    aio_ours = {
+        r["prompt_id"]: int(r["n"])
+        for r in await fetch_all(
+            "SELECT prompt_id, COUNT(*) AS n FROM aio_tracking "
+            "WHERE workspace_id = ? AND our_brand_in_aio = 1 GROUP BY prompt_id",
+            (workspace_id,),
+        )
+    }
+
+    out: List[Dict[str, Any]] = []
+    for p in prompts:
+        pid = p["id"]
+        p["_obs_count"] = obs_counts.get(pid, 0)
+        p["_recent_obs_count"] = recent_counts.get(pid, 0)
+        p["_aio_obs_count"] = aio_total.get(pid, 0)
+        p["_aio_our_count"] = aio_ours.get(pid, 0)
+        vol = await _prompt_volatility(pid)
+        own = ownership.get(pid)
+        subtype = emerging_subtype(p, own, vol)
+        if not subtype:
+            continue
+        out.append({
+            "prompt_id": pid,
+            "text": p.get("text", ""),
+            "subtype": subtype,
+            "why": _why_emerging(subtype, p, own),
+            "revenue_score": float(p.get("revenue_score") or 0),
+            "confidence": "estimated",
+        })
+    # Highest revenue first.
+    out.sort(key=lambda r: -r["revenue_score"])
+    return out

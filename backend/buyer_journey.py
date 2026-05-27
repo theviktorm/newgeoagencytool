@@ -27,6 +27,42 @@ logger = logging.getLogger("geo.buyer_journey")
 STAGES = ("awareness", "problem", "solution", "comparison",
           "trust", "objection", "decision")
 
+# ── Canonical 6-stage buyer-journey model (Phase 2 gap map) ──
+# The product-facing model the dashboard renders. The 7 internal stages above
+# are folded into these 6 so the gap map reads cleanly to an agency.
+CANONICAL_STAGES = (
+    "awareness", "consideration", "comparison", "trust", "decision", "purchase",
+)
+
+# Folding of the 7 internal stages -> 6 canonical stages.
+#   awareness   -> awareness
+#   problem     -> consideration   (recognising the problem = early consideration)
+#   solution    -> consideration   (exploring solutions = consideration)
+#   comparison  -> comparison
+#   trust       -> trust
+#   objection   -> trust           (handling objections is a trust activity)
+#   decision    -> decision
+# `purchase` has no internal equivalent — it is detected from prompt text that
+# implies booking / price / consultation (see _is_purchase_prompt).
+INTERNAL_TO_CANONICAL = {
+    "awareness": "awareness",
+    "problem": "consideration",
+    "solution": "consideration",
+    "comparison": "comparison",
+    "trust": "trust",
+    "objection": "trust",
+    "decision": "decision",
+}
+
+# Prompt-text signals that a prompt is really purchase-stage (booking / price /
+# consultation), which overrides the folded stage.
+_PURCHASE_PATTERN = re.compile(
+    r"\b(book|booking|appointment|consultation|consult|price|pricing|cost|"
+    r"how much|quote|buy|order|deposit|deposit|reserve|schedule|sign up|"
+    r"get a quote|free quote|fees?)\b",
+    re.IGNORECASE,
+)
+
 # Benchmark distribution: a healthy GEO content stack should look roughly
 # like this. Big deviations flag gaps.
 BENCHMARK_RATIO = {
@@ -92,9 +128,12 @@ async def classify_workspace(workspace_id: str, force: bool = False) -> Dict[str
 # COVERAGE
 # ═══════════════════════════════════════════════════════════════
 
-async def coverage_map(workspace_id: str, refresh: bool = True) -> Dict[str, Any]:
-    """Compute per-stage coverage. Persists into journey_coverage and
-    returns the map for the dashboard."""
+async def legacy_coverage_map(workspace_id: str, refresh: bool = True) -> Dict[str, Any]:
+    """Compute per-stage coverage over the 7 internal stages. Persists into
+    journey_coverage and returns the map for the legacy /api/journey dashboard.
+
+    Kept under its own name so the new canonical 6-stage `coverage_map`
+    (Phase 2) can own that name for the gap-map endpoint."""
     if refresh:
         await classify_workspace(workspace_id)
 
@@ -163,7 +202,7 @@ async def coverage_map(workspace_id: str, refresh: bool = True) -> Dict[str, Any
             "gap_severity": gap,
             "recommendation": rec,
         }
-    return {"workspace_id": workspace_id, "stages": out, "total_pages": total_pages}
+    return {"workspace_id": workspace_id, "stages": out, "total_pages": total_assets}
 
 
 def _stage_recommendation(stage: str, gap: str, count: int) -> str:
@@ -182,6 +221,203 @@ def _stage_recommendation(stage: str, gap: str, count: int) -> str:
     if stage == "problem":
         return "Strengthen problem-recognition content (symptoms, signs, causes)."
     return "Add awareness-stage explainers + internal links to deeper pages."
+
+
+# ═══════════════════════════════════════════════════════════════
+# CANONICAL 6-STAGE GAP MAP (Phase 2)
+# ═══════════════════════════════════════════════════════════════
+
+def _is_purchase_prompt(text: str) -> bool:
+    """True when prompt text implies booking / price / consultation."""
+    return bool(text and _PURCHASE_PATTERN.search(text))
+
+
+def canonical_stage_for_prompt(prompt_row: Dict[str, Any]) -> str:
+    """Fold a prompt's internal buyer_stage into a canonical stage, promoting
+    to 'purchase' when the prompt text signals booking/price/consultation."""
+    text = (prompt_row.get("text") or "")
+    if _is_purchase_prompt(text):
+        return "purchase"
+    internal = (prompt_row.get("buyer_stage") or "awareness").lower()
+    return INTERNAL_TO_CANONICAL.get(internal, "awareness")
+
+
+def _prompt_revenue_estimate(prompt_row: Dict[str, Any]) -> float:
+    """Best-effort EUR estimate for a prompt. Mirrors the heuristic used across
+    the engine: explicit estimated_value_eur wins, else revenue_score × 1000."""
+    val = float(prompt_row.get("estimated_value_eur") or 0)
+    if val > 0:
+        return val
+    return float(prompt_row.get("revenue_score") or 0) * 1000.0
+
+
+async def coverage_map(workspace_id: str) -> Dict[str, Any]:
+    """Canonical 6-stage buyer-journey gap map.
+
+    For each of awareness / consideration / comparison / trust / decision /
+    purchase return:
+      - prompt_count        : prompts folded into this stage
+      - owned_count         : prompts we own (our_score >= leader_score and >= 50)
+      - lost_count          : prompts a competitor leads
+      - existing_pages      : best-effort count of pages/sources mapped to the
+                              stage (via page_stages -> canonical fold), else 0
+      - existing_pages_confidence : 'estimated' (heuristic page classification)
+      - missing_pages       : bool — stage has prompts but no mapped page
+      - revenue_at_stake    : sum of per-prompt EUR estimates in the stage
+      - priority            : revenue_at_stake × lost_ratio (lost/prompt_count)
+
+    Defensive: a fresh workspace returns shaped zeros, never raises.
+    """
+    prompts = await fetch_all(
+        "SELECT * FROM prompts WHERE workspace_id = ?", (workspace_id,)
+    )
+    ownership = {
+        r["prompt_id"]: r
+        for r in await fetch_all(
+            "SELECT * FROM prompt_ownership WHERE workspace_id = ?", (workspace_id,)
+        )
+    }
+
+    # Pages per canonical stage (best-effort from page_stages classification).
+    page_rows = await fetch_all(
+        "SELECT stage, COUNT(*) AS n FROM page_stages WHERE workspace_id = ? "
+        "GROUP BY stage",
+        (workspace_id,),
+    )
+    canonical_pages: Dict[str, int] = {s: 0 for s in CANONICAL_STAGES}
+    for r in page_rows:
+        internal = (r.get("stage") or "").lower()
+        canon = INTERNAL_TO_CANONICAL.get(internal)
+        if canon:
+            canonical_pages[canon] += int(r.get("n") or 0)
+
+    agg: Dict[str, Dict[str, float]] = {
+        s: {"prompt_count": 0, "owned_count": 0, "lost_count": 0,
+            "revenue_at_stake": 0.0}
+        for s in CANONICAL_STAGES
+    }
+
+    for p in prompts:
+        stage = canonical_stage_for_prompt(p)
+        if stage not in agg:
+            stage = "awareness"
+        bucket = agg[stage]
+        bucket["prompt_count"] += 1
+        bucket["revenue_at_stake"] += _prompt_revenue_estimate(p)
+        own = ownership.get(p["id"]) or {}
+        our = float(own.get("our_score") or 0)
+        leader = float(own.get("leader_score") or 0)
+        if our >= 50 and our >= leader and our > 0:
+            bucket["owned_count"] += 1
+        elif leader > our and leader > 0:
+            bucket["lost_count"] += 1
+
+    stages_out: List[Dict[str, Any]] = []
+    for stage in CANONICAL_STAGES:
+        b = agg[stage]
+        pc = int(b["prompt_count"])
+        lost = int(b["lost_count"])
+        existing_pages = int(canonical_pages.get(stage, 0))
+        lost_ratio = (lost / pc) if pc else 0.0
+        revenue = round(b["revenue_at_stake"], 2)
+        stages_out.append({
+            "stage": stage,
+            "prompt_count": pc,
+            "owned_count": int(b["owned_count"]),
+            "lost_count": lost,
+            "existing_pages": existing_pages,
+            "existing_pages_confidence": "estimated",
+            "missing_pages": bool(pc > 0 and existing_pages == 0),
+            "revenue_at_stake": revenue,
+            "priority": round(revenue * lost_ratio, 2),
+            "confidence": "estimated",
+        })
+
+    return {
+        "workspace_id": workspace_id,
+        "model": "canonical_6_stage",
+        "stages": stages_out,
+        "total_prompts": len(prompts),
+        "confidence": "estimated",
+    }
+
+
+async def coverage_insight(workspace_id: str) -> Dict[str, Any]:
+    """Auto-generated plain-English summary of where coverage is over/under
+    indexed vs an even baseline across the 6 canonical stages.
+
+    Defensive: empty workspace returns a shaped, non-raising result.
+    """
+    cmap = await coverage_map(workspace_id)
+    stages = cmap.get("stages") or []
+    total_prompts = sum(int(s.get("prompt_count") or 0) for s in stages)
+
+    if not total_prompts:
+        return {
+            "workspace_id": workspace_id,
+            "summary": "No prompts tracked yet — import or add prompts to map "
+                       "buyer-journey coverage.",
+            "over_covered": [],
+            "under_covered": [],
+            "confidence": "estimated",
+        }
+
+    n_stages = len(CANONICAL_STAGES)
+    baseline = 1.0 / n_stages  # even share per stage
+    over: List[str] = []
+    under: List[str] = []
+    shares: Dict[str, float] = {}
+    for s in stages:
+        stage = s["stage"]
+        share = (int(s.get("prompt_count") or 0)) / total_prompts
+        shares[stage] = share
+        # > 40% above even => over-covered; < 50% of even => under-covered.
+        if share >= baseline * 1.4:
+            over.append(stage)
+        elif share <= baseline * 0.5:
+            under.append(stage)
+
+    # Where is the lost revenue concentrated? (decision/comparison/trust matter).
+    losses = {s["stage"]: int(s.get("lost_count") or 0) for s in stages}
+    worst_late = sorted(
+        [st for st in ("comparison", "trust", "decision", "purchase")],
+        key=lambda st: -losses.get(st, 0),
+    )
+    late_lost = [st for st in worst_late if losses.get(st, 0) > 0]
+
+    parts: List[str] = []
+    if over:
+        parts.append("Over-indexed on " + _join(over))
+    if under:
+        parts.append("under-covered in " + _join(under))
+    summary = ", ".join(parts) if parts else "Coverage is fairly even across stages"
+    if late_lost:
+        summary += (
+            " — AI educates with your content but recommends competitors at "
+            + _join(late_lost) + " time."
+        )
+    else:
+        summary += "."
+
+    return {
+        "workspace_id": workspace_id,
+        "summary": summary,
+        "over_covered": over,
+        "under_covered": under,
+        "shares": {k: round(v, 3) for k, v in shares.items()},
+        "confidence": "estimated",
+    }
+
+
+def _join(items: List[str]) -> str:
+    items = [str(i) for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -354,7 +354,7 @@ async def battlefield_summary(workspace_id: str) -> Dict[str, Any]:
             emerging += 1
         revenue_at_stake += float(p.get("estimated_value_eur") or 0) or float(p.get("revenue_score") or 0) * 1000
 
-    top_dominators = sorted(competitor_grip.items(), key=lambda kv: -kv[1])[:5]
+    top_dom_list = sorted(competitor_grip.items(), key=lambda kv: -kv[1])[:5]
 
     return {
         "workspace_id": workspace_id,
@@ -364,8 +364,205 @@ async def battlefield_summary(workspace_id: str) -> Dict[str, Any]:
         "lost": lost,
         "emerging": emerging,
         "estimated_revenue_at_stake_eur": revenue_at_stake,
-        "top_dominators": [{"domain": d, "lost_prompts": int(n)} for d, n in top_dominators],
+        "top_dominators": [{"domain": d, "lost_prompts": int(n)} for d, n in top_dom_list],
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# WEIGHTED TOP DOMINATORS (Explainability Phase 2)
+# ═══════════════════════════════════════════════════════════════
+
+async def top_dominators(workspace_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Rank competitor domains by a weighted Dominator Score.
+
+    Dominator Score = prompt_wins × revenue_weight × position_weight
+                      × platform_coverage × consistency
+    where every factor is normalised to 0..1 and documented below:
+
+      prompt_wins       — share of high-value prompts this domain leads, of all
+                          lost high-value prompts (0..1).
+      revenue_weight    — EUR this domain captures / max EUR any domain captures
+                          (0..1). Captured EUR = sum of per-prompt revenue
+                          estimates for prompts this domain leads.
+      position_weight   — 1 / avg_position, so position 1 -> 1.0, position 2 ->
+                          0.5, etc. (avg over prompt_observations where this
+                          domain ranked).
+      platform_coverage — distinct models on which this domain appears / total
+                          supported models (5).
+      consistency       — fraction of this domain's leads where leader_score is
+                          high (>=55), i.e. it owns decisively rather than barely
+                          (0..1).
+
+    Returns a list (highest score first). Defensive: empty workspace -> [].
+    """
+    prompts = await fetch_all(
+        "SELECT * FROM prompts WHERE workspace_id = ?", (workspace_id,)
+    )
+    if not prompts:
+        return []
+    prompt_by_id = {p["id"]: p for p in prompts}
+
+    ownership = await fetch_all(
+        "SELECT * FROM prompt_ownership WHERE workspace_id = ?", (workspace_id,)
+    )
+    # Capabilities (for weakest_factor + recommended_attack).
+    caps = {
+        (r.get("competitor_domain") or "").lower(): r
+        for r in await fetch_all(
+            "SELECT * FROM competitor_capabilities WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+    }
+
+    # Per-domain accumulators.
+    dom: Dict[str, Dict[str, Any]] = {}
+
+    def _bucket(d: str) -> Dict[str, Any]:
+        return dom.setdefault(d, {
+            "prompts_won": 0, "high_value_prompts_won": 0,
+            "est_revenue_captured": 0.0, "positions": [],
+            "stages": {}, "topics": {}, "decisive_wins": 0,
+            "leader_scores": [],
+        })
+
+    total_lost_hv = 0
+    for own in ownership:
+        leader = (own.get("leader_domain") or "").strip().lower()
+        if not leader:
+            continue
+        our = float(own.get("our_score") or 0)
+        leader_score = float(own.get("leader_score") or 0)
+        if leader_score <= our:
+            continue  # not a dominator on this prompt
+        p = prompt_by_id.get(own.get("prompt_id"))
+        if not p:
+            continue
+        b = _bucket(leader)
+        b["prompts_won"] += 1
+        b["leader_scores"].append(leader_score)
+        if leader_score >= 55:
+            b["decisive_wins"] += 1
+        rev = float(p.get("estimated_value_eur") or 0) or float(p.get("revenue_score") or 0) * 1000.0
+        b["est_revenue_captured"] += rev
+        is_hv = float(p.get("revenue_score") or 0) >= 60
+        if is_hv:
+            b["high_value_prompts_won"] += 1
+            total_lost_hv += 1
+        stage = (p.get("buyer_stage") or "awareness")
+        b["stages"][stage] = b["stages"].get(stage, 0) + 1
+        meta = from_json(p.get("classifier_meta") or "{}") or {}
+        topic = meta.get("topic") or (p.get("cluster_id") or "")
+        if topic:
+            b["topics"][topic] = b["topics"].get(topic, 0) + 1
+
+    if not dom:
+        return []
+
+    # Platform coverage + avg position from observations (per leader domain).
+    # We approximate: a domain "appears" on a model if it shows up in that
+    # model's brands_appeared / sources_cited for any prompt it leads.
+    obs_rows = await fetch_all(
+        "SELECT model, brands_appeared, sources_cited FROM prompt_observations "
+        "WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    platforms_by_dom: Dict[str, set] = {d: set() for d in dom}
+    positions_by_dom: Dict[str, List[float]] = {d: [] for d in dom}
+    for o in obs_rows:
+        model = (o.get("model") or "").lower()
+        brands = from_json(o.get("brands_appeared") or "[]", []) or []
+        sources = from_json(o.get("sources_cited") or "[]", []) or []
+        names = []
+        for br in brands if isinstance(brands, list) else []:
+            n = (br.get("name") if isinstance(br, dict) else str(br)) or ""
+            pos = br.get("position") if isinstance(br, dict) else 0
+            names.append((n.lower(), pos))
+        src_domains = {
+            (s.get("domain") or "").lower()
+            for s in (sources if isinstance(sources, list) else [])
+            if isinstance(s, dict)
+        }
+        for d in dom:
+            matched = any(d in n for n, _ in names) or any(d in sd for sd in src_domains if sd)
+            if matched and model:
+                platforms_by_dom[d].add(model)
+                for n, pos in names:
+                    if d in n and pos and int(pos) > 0:
+                        positions_by_dom[d].append(float(pos))
+
+    # Normalisers.
+    max_wins = max((b["prompts_won"] for b in dom.values()), default=1) or 1
+    max_rev = max((b["est_revenue_captured"] for b in dom.values()), default=1.0) or 1.0
+    n_models = 5.0  # len(SUPPORTED_MODELS) in prompt_tracker
+
+    results: List[Dict[str, Any]] = []
+    for d, b in dom.items():
+        prompt_wins = b["prompts_won"] / max_wins
+        revenue_weight = (b["est_revenue_captured"] / max_rev) if max_rev else 0.0
+        positions = positions_by_dom.get(d) or b["positions"]
+        avg_pos = (sum(positions) / len(positions)) if positions else 0.0
+        position_weight = (1.0 / avg_pos) if avg_pos >= 1 else 0.5  # unknown -> mid
+        platform_coverage = (len(platforms_by_dom.get(d, set())) / n_models) if n_models else 0.0
+        if platform_coverage == 0.0:
+            platform_coverage = 0.2  # cited but model unknown -> small floor
+        consistency = (b["decisive_wins"] / b["prompts_won"]) if b["prompts_won"] else 0.0
+
+        score = (
+            prompt_wins * revenue_weight * position_weight
+            * platform_coverage * consistency
+        )
+        # Spread it onto 0..100 for readability.
+        dominator_score = round(min(100.0, score * 100.0), 2)
+
+        cap = caps.get(d)
+        weakest_factor = ""
+        recommended_attack = ""
+        if cap and cap.get("weakest_axis"):
+            weakest_factor = cap.get("weakest_axis") or ""
+            recommended_attack = (
+                f"Attack their weakest axis ({weakest_factor}, "
+                f"{round(float(cap.get('weakest_axis_score') or 0))}/100): "
+                "out-publish them on that dimension."
+            )
+        else:
+            recommended_attack = (
+                "Run citation diagnosis on this domain to find the axis where "
+                "they are thinnest, then publish a stronger decision page."
+            )
+
+        main_stages = sorted(b["stages"].items(), key=lambda kv: -kv[1])
+        top_topics = sorted(b["topics"].items(), key=lambda kv: -kv[1])
+        why = (
+            f"Leads {b['prompts_won']} of your prompts "
+            f"({b['high_value_prompts_won']} high-value), "
+            f"avg position {round(avg_pos, 1) if avg_pos else 'n/a'}, "
+            f"on {len(platforms_by_dom.get(d, set())) or 'unknown'} platform(s)."
+        )
+        results.append({
+            "domain": d,
+            "prompts_won": b["prompts_won"],
+            "high_value_prompts_won": b["high_value_prompts_won"],
+            "est_revenue_captured": round(b["est_revenue_captured"], 2),
+            "avg_position": round(avg_pos, 2) if avg_pos else None,
+            "main_stages": [s for s, _ in main_stages[:3]],
+            "top_topics": [t for t, _ in top_topics[:3]],
+            "platforms": sorted(platforms_by_dom.get(d, set())),
+            "why_dominant": why,
+            "weakest_factor": weakest_factor or None,
+            "recommended_attack": recommended_attack,
+            "dominator_score": dominator_score,
+            "factors": {
+                "prompt_wins": round(prompt_wins, 3),
+                "revenue_weight": round(revenue_weight, 3),
+                "position_weight": round(position_weight, 3),
+                "platform_coverage": round(platform_coverage, 3),
+                "consistency": round(consistency, 3),
+            },
+            "confidence": "estimated",
+        })
+
+    results.sort(key=lambda r: -r["dominator_score"])
+    return results[:limit]
 
 
 # ═══════════════════════════════════════════════════════════════

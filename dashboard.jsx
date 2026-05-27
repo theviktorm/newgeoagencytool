@@ -812,6 +812,494 @@ function ScoreBreakdownCard({ wsId }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PHASE 2 SHARED COMPONENTS
+// ═══════════════════════════════════════════════════════════════
+
+// 6. CitationBreakdownCard — full citation diagnostic.
+function CitationBreakdownCard({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setData(null); setError('');
+    api(`/api/citation/${wsId}/breakdown`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, token]);
+
+  const stat = (label, obj, fmt) => {
+    const v = obj?.value;
+    const conf = obj?.confidence || 'needs_review';
+    const shown = (v == null) ? '—' : (fmt ? fmt(v) : Math.round(Number(v)));
+    return (
+      <div className="metric-card" style={{ padding: 10, textAlign: 'center' }}>
+        <div className="metric-label" style={{ fontSize: 9 }}>{label}</div>
+        <div className="metric-value" style={{ fontSize: 20 }}>{shown}</div>
+        <div style={{ marginTop: 2 }}><ConfidenceBadge level={conf} /></div>
+      </div>
+    );
+  };
+
+  const pct = v => `${Math.round(Number(v) * (Number(v) <= 1 ? 100 : 1))}%`;
+
+  const platforms = [
+    { key: 'chatgpt', label: 'ChatGPT' },
+    { key: 'gemini', label: 'Gemini' },
+    { key: 'claude', label: 'Claude' },
+    { key: 'perplexity', label: 'Perplexity' },
+    { key: 'google_aio', label: 'Google AIO' },
+  ];
+
+  const SOURCE_TYPES = [
+    { key: 'own_website', label: 'Own website', color: 'var(--emerald)' },
+    { key: 'competitor_website', label: 'Competitor', color: 'var(--rose)' },
+    { key: 'review_site', label: 'Review site', color: 'var(--cyan)' },
+    { key: 'reddit', label: 'Reddit', color: 'var(--amber)' },
+    { key: 'youtube', label: 'YouTube', color: 'var(--cyan)' },
+    { key: 'local_directory', label: 'Local directory', color: 'var(--cyan)' },
+    { key: 'media', label: 'Media', color: 'var(--amber)' },
+    { key: 'medical_directory', label: 'Medical directory', color: 'var(--cyan)' },
+    { key: 'gbp', label: 'Google Business', color: 'var(--cyan)' },
+    { key: 'product_feed', label: 'Product feed', color: 'var(--amber)' },
+    { key: 'unknown', label: 'Unknown', color: 'var(--text-muted)' },
+  ];
+
+  const sourceTotals = data?.source_type_breakdown || {};
+  const maxSource = Math.max(1, ...SOURCE_TYPES.map(s => sourceTotals[s.key] || 0));
+  const gapList = (data?.citation_gap || []).filter(g => (g.competitor_count || 0) > 0 && (g.our_count || 0) === 0);
+
+  return (
+    <div className="card">
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>Citation breakdown — where AI cites you<MetricTooltip metricKey="citation_score" /></span>
+        {data && <ConfidenceBadge level={data.confidence || 'estimated'} />}
+      </div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading breakdown…</div>}
+      {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+      {data && (
+        <React.Fragment>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6, marginBottom: 12 }}>
+            {stat('OWNED SHARE', data.owned_citation_share, pct)}
+            {stat('3P SHARE', data.third_party_share, pct)}
+            {stat('QUALITY', data.citation_quality)}
+            {stat('POSITION', data.citation_position)}
+            {stat('SENTIMENT', data.citation_sentiment)}
+            {stat('FRESHNESS', data.citation_freshness)}
+            <div className="metric-card" style={{ padding: 10, textAlign: 'center' }}>
+              <div className="metric-label" style={{ fontSize: 9 }}>OVERALL</div>
+              <div className="metric-value" style={{ fontSize: 20 }}>
+                {data.citation_quality?.value != null ? Math.round(Number(data.citation_quality.value)) : '—'}
+              </div>
+              <div style={{ marginTop: 2 }}><ConfidenceBadge level={data.confidence || 'estimated'} /></div>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Platform coverage</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {platforms.map(p => {
+                const c = (data.platform_coverage || {})[p.key] || 0;
+                const col = c > 0 ? 'var(--emerald)' : 'var(--text-muted)';
+                return (
+                  <span key={p.key} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+                    borderRadius: 14, fontSize: 11, fontWeight: 600,
+                    color: col, background: `${col}22`, border: `1px solid ${col}44`,
+                  }}>{p.label} <b style={{ fontFamily: 'var(--font-mono)' }}>{c}</b></span>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Source-type breakdown</div>
+            <div style={{ display: 'grid', gap: 4 }}>
+              {SOURCE_TYPES.map(s => {
+                const v = sourceTotals[s.key] || 0;
+                const w = Math.round((v / maxSource) * 100);
+                return (
+                  <div key={s.key} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 40px', gap: 8, alignItems: 'center', fontSize: 11 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>{s.label}</span>
+                    <div style={{ height: 8, background: 'var(--border-subtle)', borderRadius: 4, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${w}%`, background: s.color, borderRadius: 4 }} />
+                    </div>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: s.color, textAlign: 'right' }}>{v}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Citation gap — competitors cited, we are missing</div>
+            {gapList.length === 0 ? (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No major source-type gaps detected.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 4 }}>
+                {gapList.map(g => {
+                  const label = (SOURCE_TYPES.find(s => s.key === g.source_type) || {}).label || g.source_type;
+                  return (
+                    <div key={g.source_type} style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '6px 10px', borderRadius: 4,
+                      background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.25)',
+                      fontSize: 11,
+                    }}>
+                      <span><b style={{ color: 'var(--rose)' }}>{label}</b> — competitors are cited here but we are missing</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{g.competitor_count} vs {g.our_count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// 7. DominatorListCard — competitors winning prompts, expandable.
+function DominatorListCard({ wsId, limit = 10, expandable = true, title = 'Top dominators' }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setData(null); setError('');
+    api(`/api/dominators/${wsId}?limit=${limit}`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r || []); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, token, limit]);
+
+  const eur = v => `€${Math.round(Number(v) || 0).toLocaleString('en-US')}`;
+  const FACTOR_KEYS = [
+    { key: 'prompt_wins', label: 'Wins' },
+    { key: 'revenue_weight', label: 'Revenue' },
+    { key: 'position_weight', label: 'Position' },
+    { key: 'platform_coverage', label: 'Platforms' },
+    { key: 'consistency', label: 'Consistency' },
+  ];
+
+  return (
+    <div className="card">
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>{title}<MetricTooltip metricKey="dominator" /></span>
+        {data && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{data.length} competitors</span>}
+      </div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>}
+      {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+      {data && data.length === 0 && (
+        <div className="empty-state">⚔<br/>No dominators detected yet.</div>
+      )}
+      {data && data.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {data.map(d => {
+            const score = Math.round(Number(d.dominator_score) || 0);
+            const isOpen = expandable && expanded[d.domain];
+            const factors = d.factors || {};
+            return (
+              <div key={d.domain} style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 10, background: 'var(--bg-raised)' }}>
+                <div
+                  onClick={() => expandable && setExpanded(s => ({ ...s, [d.domain]: !s[d.domain] }))}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: expandable ? 'pointer' : 'default', gap: 10 }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {expandable && <span style={{ color: 'var(--text-muted)', marginRight: 4 }}>{isOpen ? '▾' : '▸'}</span>}
+                      {d.domain}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      Prompts won: <b style={{ color: 'var(--text-primary)' }}>{d.prompts_won || 0}</b>{' '}
+                      · High-value: <b style={{ color: 'var(--text-primary)' }}>{d.high_value_prompts_won || 0}</b>{' '}
+                      · Captured: <b style={{ color: 'var(--amber)' }}>{eur(d.est_revenue_captured)}</b>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 22, fontWeight: 700, color: score >= 70 ? 'var(--rose)' : score >= 40 ? 'var(--amber)' : 'var(--text-muted)' }}>{score}</span>
+                    <ConfidenceBadge level={d.confidence || 'estimated'} />
+                  </div>
+                </div>
+                {isOpen && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-subtle)', display: 'grid', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Why dominant</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>{d.why_dominant || '—'}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Factors</div>
+                      <div style={{ display: 'grid', gap: 4 }}>
+                        {FACTOR_KEYS.map(f => {
+                          const v = Math.min(1, Math.max(0, Number(factors[f.key]) || 0));
+                          const w = Math.round(v * 100);
+                          const col = v >= 0.6 ? 'var(--rose)' : v >= 0.3 ? 'var(--amber)' : 'var(--text-muted)';
+                          return (
+                            <div key={f.key} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 40px', gap: 6, alignItems: 'center', fontSize: 11 }}>
+                              <span style={{ color: 'var(--text-secondary)' }}>{f.label}</span>
+                              <div style={{ height: 6, background: 'var(--border-subtle)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${w}%`, background: col, borderRadius: 3 }} />
+                              </div>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: col, textAlign: 'right' }}>{w}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {(d.main_stages || []).length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Main stages</div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {d.main_stages.map(s => <span key={s} className="badge purple">{s}</span>)}
+                        </div>
+                      </div>
+                    )}
+                    {(d.top_topics || []).length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Top topics</div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {d.top_topics.map(t => <span key={t} className="badge">{t}</span>)}
+                        </div>
+                      </div>
+                    )}
+                    {(d.platforms || []).length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Platforms</div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {d.platforms.map(p => <span key={p} className="badge emerald">{p}</span>)}
+                        </div>
+                      </div>
+                    )}
+                    {d.weakest_factor && (
+                      <div>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginRight: 6 }}>Weakest:</span>
+                        <span className="badge rose">{d.weakest_factor}</span>
+                      </div>
+                    )}
+                    {d.recommended_attack && (
+                      <div style={{ borderLeft: '2px solid var(--emerald)', paddingLeft: 10 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Recommended attack</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>{d.recommended_attack}</div>
+                      </div>
+                    )}
+                    {d.avg_position != null && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Avg position: <b style={{ color: 'var(--text-primary)' }}>{Number(d.avg_position).toFixed(1)}</b></div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 8. EmergingPanelCard — emerging prompts grouped by subtype.
+const EMERGING_SUBTYPE_LABEL = {
+  new_prompt: 'New prompts',
+  rising_intent: 'Rising intent',
+  no_clear_winner: 'No clear winner',
+  aio_emerging: 'AIO emerging',
+  competitor_emerging: 'Competitor emerging',
+  revenue_emerging: 'Revenue emerging',
+};
+
+function EmergingPanelCard({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setData(null); setError('');
+    api(`/api/emerging/${wsId}`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r || []); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, token]);
+
+  const groups = useMemo(() => {
+    const g = {};
+    (data || []).forEach(item => {
+      const k = item.subtype || 'new_prompt';
+      if (!g[k]) g[k] = [];
+      g[k].push(item);
+    });
+    return g;
+  }, [data]);
+
+  return (
+    <div className="card">
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>Emerging prompts — where momentum is shifting</span>
+        {data && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{data.length} items</span>}
+      </div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>}
+      {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+      {data && data.length === 0 && (
+        <div className="empty-state" style={{ fontSize: 12 }}>◌<br/>No emerging signals yet.</div>
+      )}
+      {data && data.length > 0 && (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {Object.keys(groups).map(sub => (
+            <div key={sub}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span className="badge purple">{EMERGING_SUBTYPE_LABEL[sub] || sub}</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{groups[sub].length} prompts</span>
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {groups[sub].map(it => (
+                  <div key={it.prompt_id} style={{
+                    padding: '6px 10px', border: '1px solid var(--border-subtle)',
+                    borderRadius: 4, background: 'var(--bg-raised)', fontSize: 11,
+                    display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.text}</div>
+                      {it.why && <div style={{ color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{it.why}</div>}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                      {it.revenue_score != null && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--amber)' }}>
+                          rev {Math.round(Number(it.revenue_score))}
+                        </span>
+                      )}
+                      <ConfidenceBadge level={it.confidence || 'estimated'} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 9. TrackingLogPanel — recent tracking runs (live | peec_replay | mixed).
+function TrackingLogPanel({ wsId, onRefresh }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [reloadIdx, setReloadIdx] = useState(0);
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setData(null); setError('');
+    api(`/api/tracking/${wsId}/runs`, {}, token)
+      .then(r => { if (!cancelled) setData(r.data || r || []); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, token, reloadIdx]);
+
+  const sourceChip = src => {
+    const v = String(src || 'live').toLowerCase();
+    const map = {
+      live: { color: 'var(--emerald)', title: 'Live model API calls' },
+      peec_replay: { color: 'var(--amber)', title: 'No live model API keys — using cached Peec data' },
+      mixed: { color: 'var(--cyan)', title: 'Mixed live + replay' },
+    };
+    const cfg = map[v] || { color: 'var(--text-muted)', title: v };
+    return (
+      <span title={cfg.title} style={{
+        display: 'inline-block', padding: '1px 7px', borderRadius: 9,
+        fontSize: 9, fontWeight: 600, fontFamily: 'var(--font-mono)',
+        color: cfg.color, background: `${cfg.color}22`, whiteSpace: 'nowrap',
+      }}>{v}</span>
+    );
+  };
+
+  const fmtTime = ts => {
+    if (!ts) return '—';
+    try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
+  };
+  const fmtDur = ms => {
+    if (ms == null) return '—';
+    const s = Math.round(Number(ms) / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${s % 60}s`;
+  };
+  const handleRefresh = () => {
+    if (onRefresh) onRefresh();
+    setReloadIdx(i => i + 1);
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>Tracking runs</span>
+        <button className="btn btn-sm" onClick={handleRefresh}>Refresh</button>
+      </div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>}
+      {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+      {data && data.length === 0 && (
+        <div className="empty-state" style={{ fontSize: 12 }}>
+          ⌁<br/>No tracking runs yet. Click 'Track All High-Value' to start.
+          <div style={{ marginTop: 8 }}>
+            <button className="btn btn-sm" onClick={handleRefresh}>Refresh</button>
+          </div>
+        </div>
+      )}
+      {data && data.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="data-table" style={{ fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th>Started</th><th>Finished</th><th>Prompts</th><th>Models</th>
+                <th>New Wins</th><th>New Losses</th><th>Citation Δ</th><th>AIO Δ</th>
+                <th>Errors</th><th>Duration</th><th>Source</th><th>Conf</th><th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(r => {
+                const losses = Number(r.new_losses) || 0;
+                const wins = Number(r.new_wins) || 0;
+                const models = Array.isArray(r.models_checked) ? r.models_checked : [];
+                const notes = r.notes || '';
+                return (
+                  <tr key={r.id}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.started_at)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(r.finished_at)}</td>
+                    <td style={{ textAlign: 'right' }}>{r.prompts_checked ?? '—'}</td>
+                    <td><span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{models.length ? models.join(', ') : '—'}</span></td>
+                    <td style={{ textAlign: 'right', color: wins > 0 ? 'var(--emerald)' : 'var(--text-muted)', fontWeight: wins > 0 ? 600 : 400 }}>{wins}</td>
+                    <td style={{ textAlign: 'right', color: losses > 0 ? 'var(--rose)' : 'var(--text-muted)', fontWeight: losses > 0 ? 600 : 400 }}>{losses}</td>
+                    <td style={{ textAlign: 'right' }}>{r.citation_changes ?? 0}</td>
+                    <td style={{ textAlign: 'right' }}>{r.aio_changes ?? 0}</td>
+                    <td style={{ textAlign: 'right', color: (r.errors || 0) > 0 ? 'var(--rose)' : 'var(--text-muted)' }}>{r.errors ?? 0}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{fmtDur(r.duration_ms)}</td>
+                    <td>{sourceChip(r.data_source)}</td>
+                    <td><ConfidenceBadge level={r.confidence || 'estimated'} /></td>
+                    <td title={notes} style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{notes || '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // OVERVIEW PAGE
 // ═══════════════════════════════════════════════════════════════
 
@@ -4283,12 +4771,29 @@ function PromptBattlefieldPage({ state }) {
   const [tracking, setTracking] = useState(false);
   const [msg, setMsg] = useState('');
   const [importing, setImporting] = useState(false);
+  const [emergingMap, setEmergingMap] = useState({}); // prompt_id -> { subtype, why }
+  const [trackingSource, setTrackingSource] = useState(null); // latest data_source
+  const [emergingHover, setEmergingHover] = useState(null); // prompt_id of hovered row
 
   const load = () => {
     if (!wsId) return;
     api(`/api/prompts/${wsId}/battlefield`, {}, token).then(r => setBf(r.data || r)).catch(() => {});
     api(`/api/prompts/${wsId}${filterStage ? '?stage=' + filterStage : ''}`, {}, token)
       .then(r => setPrompts(r.data || [])).catch(() => {});
+    api(`/api/emerging/${wsId}`, {}, token)
+      .then(r => {
+        const list = r.data || r || [];
+        const m = {};
+        list.forEach(it => { if (it.prompt_id) m[it.prompt_id] = { subtype: it.subtype, why: it.why, confidence: it.confidence }; });
+        setEmergingMap(m);
+      })
+      .catch(() => {});
+    api(`/api/tracking/${wsId}/runs`, {}, token)
+      .then(r => {
+        const runs = r.data || r || [];
+        setTrackingSource(runs[0]?.data_source || null);
+      })
+      .catch(() => {});
   };
   useEffect(load, [wsId, filterStage]);
 
@@ -4332,6 +4837,7 @@ function PromptBattlefieldPage({ state }) {
   };
 
   const stageColor = { decision: 'rose', trust: 'amber', comparison: 'purple', objection: 'blue', solution: 'emerald', problem: 'blue', awareness: 'gray' };
+  const isReplay = trackingSource === 'peec_replay';
 
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
@@ -4361,51 +4867,93 @@ function PromptBattlefieldPage({ state }) {
         )}
       </div>
 
-      <div className="card">
-        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Prompts ({prompts.length})</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <select className="form-input" style={{ width: 'auto', fontSize: 11 }} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
-              <option value="">All stages</option>
-              {['awareness','problem','solution','comparison','trust','objection','decision'].map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <button className="btn btn-sm btn-primary" onClick={trackAll} disabled={tracking}>{tracking ? 'Tracking...' : 'Track All (high-value)'}</button>
-          <button className="btn btn-sm" onClick={async () => { setBusy(true); setMsg(''); try { const r = await api(`/api/prompts/${wsId}/reclassify?max_n=40`, { method: 'POST' }, token); setMsg(`Claude classified ${r.data?.reclassified || 0} prompts.`); load(); } catch (e) { setMsg('Reclassify failed: ' + e.message); } setBusy(false); }} disabled={busy}>Reclassify (Claude)</button>
+      <EmergingPanelCard wsId={wsId} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+        <div className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Prompts ({prompts.length})</span>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select className="form-input" style={{ width: 'auto', fontSize: 11 }} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+                <option value="">All stages</option>
+                {['awareness','problem','solution','comparison','trust','objection','decision'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <button className="btn btn-sm btn-primary" onClick={trackAll} disabled={tracking}>{tracking ? 'Tracking...' : 'Track All (high-value)'}</button>
+              {isReplay && (
+                <span title="No live model API keys — using cached Peec data" style={{ fontSize: 10, color: 'var(--amber)', fontStyle: 'italic' }}>
+                  Tracking will use Peec replay (no model API keys configured)
+                </span>
+              )}
+              <button className="btn btn-sm" onClick={async () => { setBusy(true); setMsg(''); try { const r = await api(`/api/prompts/${wsId}/reclassify?max_n=40`, { method: 'POST' }, token); setMsg(`Claude classified ${r.data?.reclassified || 0} prompts.`); load(); } catch (e) { setMsg('Reclassify failed: ' + e.message); } setBusy(false); }} disabled={busy}>Reclassify (Claude)</button>
+            </div>
           </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <input className="form-input" placeholder='Add a prompt: e.g. "best private orthopedic surgeon Budapest"'
+              value={newText} onChange={e => setNewText(e.target.value)} style={{ flex: 1 }} />
+            <button className="btn btn-primary" onClick={addPrompt} disabled={busy}>{busy ? 'Adding...' : 'Add Prompt'}</button>
+            <label className="btn" style={{ cursor: 'pointer' }}>
+              {importing ? 'Importing...' : 'Import Peec Prompts CSV'}
+              <input type="file" accept=".csv,.tsv" style={{ display: 'none' }}
+                disabled={importing}
+                onChange={e => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ''; }} />
+            </label>
+          </div>
+          {msg && <div style={{ fontSize: 11, color: 'var(--emerald)', marginBottom: 6 }}>{msg}</div>}
+          {prompts.length === 0 ? (
+            <div className="empty-state">⚑<br/>No prompts yet. Add the questions you want AI to recommend you for.</div>
+          ) : (
+            <table className="data-table"><thead><tr>
+              <th>Prompt</th><th>Type</th><th>Stage</th>
+              <th>Revenue <MetricTooltip metricKey="prompt_revenue" /></th>
+              <th>Ownership <MetricTooltip metricKey="prompt_ownership_level" /></th>
+              <th>Source</th><th>Confidence</th><th>Status</th>
+            </tr></thead><tbody>{prompts.slice(0, 200).map(p => {
+              const em = emergingMap[p.id];
+              return (
+                <tr key={p.id}>
+                  <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', position: 'relative' }}>
+                    <span>{p.text}</span>
+                    {em && (
+                      <span
+                        onMouseEnter={() => setEmergingHover(p.id)}
+                        onMouseLeave={() => setEmergingHover(null)}
+                        title={em.why || ''}
+                        style={{
+                          marginLeft: 6, display: 'inline-block', padding: '1px 7px',
+                          borderRadius: 9, fontSize: 9, fontWeight: 600,
+                          color: 'var(--purple)', background: 'rgba(168,85,247,0.18)',
+                          border: '1px solid rgba(168,85,247,0.35)',
+                          fontFamily: 'var(--font-mono)', cursor: 'help',
+                        }}
+                      >Emerging · {em.subtype}</span>
+                    )}
+                    {em && emergingHover === p.id && em.why && (
+                      <div style={{
+                        position: 'absolute', top: '100%', left: 0, zIndex: 50,
+                        marginTop: 4, padding: '6px 8px',
+                        background: 'var(--bg-raised)', border: '1px solid var(--border-default)',
+                        borderRadius: 4, fontSize: 11, color: 'var(--text-secondary)',
+                        maxWidth: 320, lineHeight: 1.4, boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+                      }}>{em.why}</div>
+                    )}
+                  </td>
+                  <td><span className="badge">{p.prompt_type}</span></td>
+                  <td><span className={`badge ${stageColor[p.buyer_stage] || 'gray'}`}>{p.buyer_stage}</span></td>
+                  <td style={{ fontWeight: 600, color: p.revenue_score >= 70 ? 'var(--emerald)' : p.revenue_score >= 40 ? 'var(--amber)' : 'var(--text-muted)' }}>{Math.round(p.revenue_score || 0)}</td>
+                  <td><OwnershipLevelBadge level={p.ownership_level} status={p.ownership_status} /></td>
+                  <td>{p.source || '—'}</td>
+                  <td><ConfidenceBadge level={p.confidence || 'estimated'} /></td>
+                  <td><span className="badge">{p.status}</span></td>
+                </tr>
+              );
+            })}</tbody></table>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <input className="form-input" placeholder='Add a prompt: e.g. "best private orthopedic surgeon Budapest"'
-            value={newText} onChange={e => setNewText(e.target.value)} style={{ flex: 1 }} />
-          <button className="btn btn-primary" onClick={addPrompt} disabled={busy}>{busy ? 'Adding...' : 'Add Prompt'}</button>
-          <label className="btn" style={{ cursor: 'pointer' }}>
-            {importing ? 'Importing...' : 'Import Peec Prompts CSV'}
-            <input type="file" accept=".csv,.tsv" style={{ display: 'none' }}
-              disabled={importing}
-              onChange={e => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ''; }} />
-          </label>
+
+        <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>
+          <DominatorListCard wsId={wsId} limit={5} expandable={false} title="Top dominators" />
+          <TrackingLogPanel wsId={wsId} onRefresh={load} />
         </div>
-        {msg && <div style={{ fontSize: 11, color: 'var(--emerald)', marginBottom: 6 }}>{msg}</div>}
-        {prompts.length === 0 ? (
-          <div className="empty-state">⚑<br/>No prompts yet. Add the questions you want AI to recommend you for.</div>
-        ) : (
-          <table className="data-table"><thead><tr>
-            <th>Prompt</th><th>Type</th><th>Stage</th>
-            <th>Revenue <MetricTooltip metricKey="prompt_revenue" /></th>
-            <th>Ownership <MetricTooltip metricKey="prompt_ownership_level" /></th>
-            <th>Source</th><th>Confidence</th><th>Status</th>
-          </tr></thead><tbody>{prompts.slice(0, 200).map(p => (
-            <tr key={p.id}>
-              <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.text}</td>
-              <td><span className="badge">{p.prompt_type}</span></td>
-              <td><span className={`badge ${stageColor[p.buyer_stage] || 'gray'}`}>{p.buyer_stage}</span></td>
-              <td style={{ fontWeight: 600, color: p.revenue_score >= 70 ? 'var(--emerald)' : p.revenue_score >= 40 ? 'var(--amber)' : 'var(--text-muted)' }}>{Math.round(p.revenue_score || 0)}</td>
-              <td><OwnershipLevelBadge level={p.ownership_level} status={p.ownership_status} /></td>
-              <td>{p.source || '—'}</td>
-              <td><ConfidenceBadge level={p.confidence || 'estimated'} /></td>
-              <td><span className="badge">{p.status}</span></td>
-            </tr>
-          ))}</tbody></table>
-        )}
       </div>
     </div>
   );
@@ -4455,6 +5003,7 @@ function CitationIntelPage({ state }) {
 
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <CitationBreakdownCard wsId={wsId} />
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Citation Intelligence — why are we losing</span>
@@ -4671,12 +5220,23 @@ function RevenuePriorityPage({ state }) {
 function BuyerJourneyPage({ state }) {
   const { token } = useContext(AuthContext);
   const wsId = state.activeWorkspace?.id;
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(null);     // legacy /api/journey/{wsId}
+  const [cov, setCov] = useState(null);       // /api/journey/{wsId}/coverage-map
+  const [insight, setInsight] = useState(null); // /api/journey/{wsId}/insight
+  const [covErr, setCovErr] = useState('');
+  const [insightErr, setInsightErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = () => {
     if (!wsId) return;
     api(`/api/journey/${wsId}?refresh=false`, {}, token).then(r => setData(r.data || r)).catch(() => {});
+    setCovErr(''); setInsightErr('');
+    api(`/api/journey/${wsId}/coverage-map`, {}, token)
+      .then(r => setCov(r.data || r))
+      .catch(e => setCovErr(e.message || 'Failed to load'));
+    api(`/api/journey/${wsId}/insight`, {}, token)
+      .then(r => setInsight(r.data || r))
+      .catch(e => setInsightErr(e.message || 'Failed to load'));
   };
   useEffect(load, [wsId]);
 
@@ -4684,42 +5244,189 @@ function BuyerJourneyPage({ state }) {
     setBusy(true);
     try { const r = await api(`/api/journey/${wsId}?refresh=true`, {}, token); setData(r.data || r); } catch {}
     setBusy(false);
+    load();
   };
 
-  const STAGES = ['awareness','problem','solution','comparison','trust','objection','decision'];
+  const CANONICAL_6 = ['awareness','consideration','comparison','trust','decision','purchase'];
+  const LEGACY_STAGES = ['awareness','problem','solution','comparison','trust','objection','decision'];
   const sevColor = { critical: 'rose', medium: 'amber', low: 'amber', none: 'emerald' };
+
+  const priorityColor = p => {
+    const v = String(p || '').toLowerCase();
+    if (v === 'high') return 'rose';
+    if (v === 'mid' || v === 'medium') return 'amber';
+    if (v === 'low') return 'emerald';
+    return 'gray';
+  };
+
+  const eur = v => `€${Math.round(Number(v) || 0).toLocaleString('en-US')}`;
+
+  const stageRow = name => {
+    const s = (cov && cov.stages && cov.stages[name]) || {};
+    return {
+      name,
+      prompt_count: s.prompt_count ?? 0,
+      owned_count: s.owned_count ?? 0,
+      lost_count: s.lost_count ?? 0,
+      existing_pages: s.existing_pages ?? 0,
+      missing_pages: s.missing_pages ?? 0,
+      revenue_at_stake: s.revenue_at_stake ?? 0,
+      priority: s.priority || 'low',
+      confidence: s.confidence || 'estimated',
+    };
+  };
+
+  const recoLine = r => {
+    if (r.lost_count > 0 && r.missing_pages > 0) {
+      return `Build ${r.missing_pages} ${r.name} page${r.missing_pages === 1 ? '' : 's'}; ${eur(r.revenue_at_stake)} at stake (${r.lost_count} prompts lost).`;
+    }
+    if (r.lost_count > 0) {
+      return `Recover ${r.lost_count} lost ${r.name} prompt${r.lost_count === 1 ? '' : 's'}; ${eur(r.revenue_at_stake)} at stake.`;
+    }
+    if (r.missing_pages > 0) {
+      return `Add ${r.missing_pages} ${r.name} page${r.missing_pages === 1 ? '' : 's'} to widen funnel coverage.`;
+    }
+    if (r.prompt_count === 0) return `No ${r.name} prompts tracked yet.`;
+    return `${r.name} fully covered (${r.owned_count}/${r.prompt_count} owned).`;
+  };
 
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+
+      {/* Insight card */}
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Buyer Journey Coverage Map</span>
-          <button className="btn btn-sm btn-primary" onClick={refresh} disabled={busy}>{busy ? 'Re-classifying...' : 'Refresh'}</button>
+          <span>Buyer Journey Insight</span>
+          {insight && <ConfidenceBadge level={insight.confidence || 'estimated'} />}
         </div>
-        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Audit your content by decision stage. Money is in the last three stages.</p>
-        {data && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6, marginTop: 8 }}>
-            {STAGES.map(s => {
-              const x = (data.stages || {})[s] || {};
-              const cov = x.coverage_score || 0;
-              return (
-                <div key={s} className="card" style={{ padding: 10, textAlign: 'center' }}>
-                  <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{s}</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: cov >= 60 ? 'var(--emerald)' : cov >= 30 ? 'var(--amber)' : 'var(--rose)' }}>{Math.round(cov)}</div>
-                  <div style={{ fontSize: 10 }}>{x.page_count || 0} pages</div>
-                  <div style={{ marginTop: 4 }}><span className={`badge ${sevColor[x.gap_severity] || 'gray'}`}>{x.gap_severity || 'none'}</span></div>
-                </div>
-              );
-            })}
-          </div>
+        {insightErr && <div style={{ fontSize: 12, color: 'var(--rose)' }}>{insightErr}</div>}
+        {!insight && !insightErr && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading insight…</div>}
+        {insight && (
+          <React.Fragment>
+            <div style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--text-primary)', marginBottom: 12 }}>
+              {insight.summary || 'No summary available.'}
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', minWidth: 100 }}>Over-covered</span>
+                {(insight.over_covered || []).length === 0
+                  ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+                  : insight.over_covered.map(s => <span key={s} className="badge emerald">{s}</span>)}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', minWidth: 100 }}>Under-covered</span>
+                {(insight.under_covered || []).length === 0
+                  ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+                  : insight.under_covered.map(s => <span key={s} className="badge rose">{s}</span>)}
+              </div>
+            </div>
+          </React.Fragment>
         )}
       </div>
-      {data && Object.entries(data.stages || {}).map(([s, x]) => (
-        <div key={s} className="card">
-          <div className="card-header">{s} <span className="badge">{x.page_count} pages · {x.prompt_count} prompts</span></div>
-          <div style={{ fontSize: 13 }}>{x.recommendation}</div>
+
+      {/* Coverage map table — canonical 6 */}
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Coverage map — canonical 6 stages</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {cov && <ConfidenceBadge level={cov.confidence || 'estimated'} />}
+            <button className="btn btn-sm btn-primary" onClick={refresh} disabled={busy}>{busy ? 'Re-classifying...' : 'Refresh'}</button>
+          </div>
         </div>
-      ))}
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Audit your content by buyer stage. Money is in the last three stages.</p>
+        {covErr && <div style={{ fontSize: 12, color: 'var(--rose)' }}>{covErr}</div>}
+        {!cov && !covErr && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading coverage map…</div>}
+        {cov && (
+          <table className="data-table" style={{ fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th>Stage<MetricTooltip metricKey="buyer_journey_stage" /></th>
+                <th style={{ textAlign: 'right' }}>Prompts</th>
+                <th style={{ textAlign: 'right' }}>Owned</th>
+                <th style={{ textAlign: 'right' }}>Lost</th>
+                <th style={{ textAlign: 'right' }}>Existing Pages</th>
+                <th style={{ textAlign: 'right' }}>Missing Pages</th>
+                <th style={{ textAlign: 'right' }}>Revenue at Stake</th>
+                <th>Priority</th>
+                <th>Conf.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CANONICAL_6.map(stageRow).map(r => (
+                <tr key={r.name}>
+                  <td style={{ textTransform: 'capitalize', fontWeight: 600 }}>{r.name}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{r.prompt_count}</td>
+                  <td style={{ textAlign: 'right', color: 'var(--emerald)', fontFamily: 'var(--font-mono)' }}>{r.owned_count}</td>
+                  <td style={{ textAlign: 'right', color: r.lost_count > 0 ? 'var(--rose)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{r.lost_count}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{r.existing_pages}</td>
+                  <td style={{ textAlign: 'right', color: r.missing_pages > 0 ? 'var(--amber)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{r.missing_pages}</td>
+                  <td style={{ textAlign: 'right', color: 'var(--amber)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{eur(r.revenue_at_stake)}</td>
+                  <td><span className={`badge ${priorityColor(r.priority)}`}>{r.priority}</span></td>
+                  <td><ConfidenceBadge level={r.confidence} /></td>
+                </tr>
+              ))}
+              {cov.totals && (
+                <tr style={{ borderTop: '2px solid var(--border-default)', background: 'var(--bg-raised)' }}>
+                  <td style={{ fontWeight: 700 }}>Total</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{cov.totals.prompt_count ?? '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--emerald)' }}>{cov.totals.owned_count ?? '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--rose)' }}>{cov.totals.lost_count ?? '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{cov.totals.existing_pages ?? '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{cov.totals.missing_pages ?? '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--amber)' }}>{cov.totals.revenue_at_stake != null ? eur(cov.totals.revenue_at_stake) : '—'}</td>
+                  <td></td>
+                  <td></td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Per-stage recommended actions */}
+      {cov && (
+        <div className="card">
+          <div className="card-header">Per-stage recommended actions</div>
+          <ol style={{ paddingLeft: 18, fontSize: 12, display: 'grid', gap: 6, margin: 0 }}>
+            {CANONICAL_6.map(stageRow).map(r => (
+              <li key={r.name} style={{ lineHeight: 1.5 }}>
+                <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{r.name}:</span>{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>{recoLine(r)}</span>{' '}
+                <span className={`badge ${priorityColor(r.priority)}`} style={{ marginLeft: 4 }}>{r.priority}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* Legacy: keep old per-stage detail accessible if present */}
+      {data && (data.stages || data.recommendation) && (
+        <div className="card">
+          <div className="card-header">Legacy stage detail (Phase 1)</div>
+          {data && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6, marginBottom: 10 }}>
+              {LEGACY_STAGES.map(s => {
+                const x = (data.stages || {})[s] || {};
+                const cv = x.coverage_score || 0;
+                return (
+                  <div key={s} className="card" style={{ padding: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{s}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: cv >= 60 ? 'var(--emerald)' : cv >= 30 ? 'var(--amber)' : 'var(--rose)' }}>{Math.round(cv)}</div>
+                    <div style={{ fontSize: 10 }}>{x.page_count || 0} pages</div>
+                    <div style={{ marginTop: 4 }}><span className={`badge ${sevColor[x.gap_severity] || 'gray'}`}>{x.gap_severity || 'none'}</span></div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {data && Object.entries(data.stages || {}).map(([s, x]) => (
+            <div key={s} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontWeight: 600, fontSize: 12, textTransform: 'capitalize' }}>{s} <span className="badge">{x.page_count} pages · {x.prompt_count} prompts</span></div>
+              {x.recommendation && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 3 }}>{x.recommendation}</div>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -5046,6 +5753,7 @@ function AuthorityScorePage({ state }) {
         </div>
       </div>
       <ScoreBreakdownCard wsId={wsId} />
+      <CitationBreakdownCard wsId={wsId} />
       {latest.length === 0 ? <div className="empty-state">★<br/>No score yet. Click Compute.</div> : latest.map(s => (
         <div key={s.id} className="card">
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -5168,6 +5876,7 @@ function WarRoomPage({ state }) {
   const [auth, setAuth] = useState([]);
   const [recent, setRecent] = useState([]);
   const [dist, setDist] = useState(null);
+  const [topDom, setTopDom] = useState([]);
   const [busy, setBusy] = useState(false);
 
   const load = () => {
@@ -5177,6 +5886,7 @@ function WarRoomPage({ state }) {
     api(`/api/authority/${wsId}/latest`, {}, token).then(r => setAuth((r.data || r).scores || [])).catch(() => {});
     api(`/api/alerts/${wsId}/events?limit=15`, {}, token).then(r => setRecent(r.data || [])).catch(() => {});
     api(`/api/ownership/${wsId}/distribution`, {}, token).then(r => setDist(r.data || r)).catch(() => {});
+    api(`/api/dominators/${wsId}?limit=3`, {}, token).then(r => setTopDom(r.data || r || [])).catch(() => {});
   };
   useEffect(load, [wsId]);
   useEffect(() => {
@@ -5221,6 +5931,14 @@ function WarRoomPage({ state }) {
             <div style={{ fontSize: 10, color: 'var(--emerald)' }}>€{Math.round(rev?.won_eur || 0).toLocaleString()} won</div>
           </div>
         </div>
+        {topDom.length > 0 && (
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Top 3 dominators</span>
+            {topDom.slice(0, 3).map(d => (
+              <span key={d.domain} className="badge rose">{d.domain} · {Math.round(Number(d.dominator_score) || 0)}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -5247,17 +5965,7 @@ function WarRoomPage({ state }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
-        <div className="card">
-          <div className="card-header">Top dominators (high-value prompts)</div>
-          {(bf?.top_dominators || []).length === 0 ? (
-            <div className="empty-state">⚔<br/>No competitive pressure yet — import a Peec CSV.</div>
-          ) : (bf.top_dominators.map(d => (
-            <div key={d.domain} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-              <span style={{ fontWeight: 600 }}>{d.domain}</span>
-              <span><span className="badge rose">{d.lost_prompts} prompts lost</span></span>
-            </div>
-          )))}
-        </div>
+        <DominatorListCard wsId={wsId} limit={10} expandable={true} />
         <div className="card">
           <div className="card-header">Recent alerts</div>
           {recent.length === 0 ? (
@@ -5270,6 +5978,8 @@ function WarRoomPage({ state }) {
           )))}
         </div>
       </div>
+
+      <TrackingLogPanel wsId={wsId} onRefresh={load} />
     </div>
   );
 }

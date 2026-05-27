@@ -600,6 +600,8 @@ from . import (
     action_engine, backtest, integrations_status,
     # Explainability layer (Phase 1)
     metric_dictionary, ownership,
+    # Explainability layer (Phase 2)
+    citation_breakdown,
 )
 from fastapi.responses import Response
 
@@ -694,6 +696,44 @@ async def ownership_prompt_route(ws_id: str, prompt_id: str):
     return ApiResponse(data=res).dict()
 
 
+# ─── Explainability Phase 2: gap map, citations, dominators, emerging ───
+
+@app.get("/api/journey/{ws_id}/coverage-map")
+async def journey_coverage_map(ws_id: str):
+    res = await buyer_journey.coverage_map(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/journey/{ws_id}/insight")
+async def journey_coverage_insight(ws_id: str):
+    res = await buyer_journey.coverage_insight(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/citation/{ws_id}/breakdown")
+async def citation_breakdown_route(ws_id: str):
+    res = await citation_breakdown.citation_breakdown(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/dominators/{ws_id}")
+async def dominators_route(ws_id: str, limit: int = 10):
+    rows = await prompt_engine.top_dominators(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/emerging/{ws_id}")
+async def emerging_route(ws_id: str):
+    rows = await ownership.emerging_prompts(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/tracking/{ws_id}/runs")
+async def tracking_runs_route(ws_id: str, limit: int = 20):
+    rows = await prompt_tracker.list_tracking_runs(ws_id, limit=limit)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
 # ─── 2. Citation Intelligence Layer ────────────────────────────
 
 @app.post("/api/intel/diagnose/{ws_id}/{prompt_id}")
@@ -782,7 +822,7 @@ async def revenue_breakdown_route(ws_id: str, prompt_id: str):
 
 @app.get("/api/journey/{ws_id}")
 async def journey_get(ws_id: str, refresh: bool = True):
-    res = await buyer_journey.coverage_map(ws_id, refresh=refresh)
+    res = await buyer_journey.legacy_coverage_map(ws_id, refresh=refresh)
     return ApiResponse(data=res).dict()
 
 

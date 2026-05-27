@@ -705,6 +705,31 @@ CREATE INDEX IF NOT EXISTS idx_authsc_observed ON authority_scores(observed_at);
 CREATE INDEX IF NOT EXISTS idx_authsc_subject ON authority_scores(subject_domain);
 
 -- ───────────────────────────────────────────────────────────────
+-- 12. TRACK-ALL LOGGING (Explainability Phase 2)
+--     One row per track_workspace run so the agency can prove the
+--     engine actually ran, what it checked, and what changed.
+-- ───────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tracking_runs (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    started_at          TEXT DEFAULT (datetime('now')),
+    finished_at         TEXT,
+    prompts_checked     INTEGER DEFAULT 0,
+    models_checked      TEXT DEFAULT '[]',       -- JSON list of model ids
+    new_losses          INTEGER DEFAULT 0,        -- delta vs previous run
+    new_wins            INTEGER DEFAULT 0,
+    citation_changes    INTEGER DEFAULT 0,
+    aio_changes         INTEGER DEFAULT 0,
+    errors              INTEGER DEFAULT 0,
+    duration_ms         INTEGER DEFAULT 0,
+    data_source         TEXT DEFAULT 'live',      -- live | peec_replay | mixed
+    confidence          TEXT DEFAULT 'estimated', -- estimated | verified | imported
+    notes               TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_trkruns_workspace ON tracking_runs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_trkruns_started ON tracking_runs(started_at);
+
+-- ───────────────────────────────────────────────────────────────
 -- 11. YOUTUBE GEO OPTIMIZER
 -- ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS youtube_assets (
