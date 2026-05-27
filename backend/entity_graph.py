@@ -473,6 +473,384 @@ async def neighbors(
     return out
 
 
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3 — TOPIC RELABEL + GRAPH INSIGHT
+# Replaces UUID topic labels with human-readable ones derived from the
+# prompt texts grouped under that topic.
+# ═══════════════════════════════════════════════════════════════
+
+# Conservative bilingual stop-word set. EN + HU. Kept inline (no new deps).
+_EN_STOP = {
+    "the", "a", "an", "of", "to", "in", "for", "on", "and", "or", "is",
+    "are", "be", "with", "by", "as", "at", "this", "that", "it", "from",
+    "what", "how", "who", "where", "when", "why", "vs", "versus", "best",
+    "top", "near", "me", "i", "we", "our", "you", "your", "do", "does",
+    "did", "can", "should", "would", "could", "will", "have", "has",
+    "had", "but", "if", "than", "then", "so", "too", "very", "just",
+    "out", "into", "more", "less", "any", "some", "all", "no", "not",
+    "about", "after", "before", "between", "during", "over", "under",
+    "such", "much", "many", "vs.", "etc",
+}
+_HU_STOP = {
+    "a", "az", "egy", "és", "vagy", "mi", "mit", "ki", "kik", "hol",
+    "hogyan", "mikor", "miért", "milyen", "mely", "van", "vannak",
+    "nincs", "is", "csak", "így", "úgy", "de", "ha", "mert", "ezek",
+    "azok", "ez", "az", "ami", "amely", "akik", "amelyek", "egyik",
+    "másik", "valamint", "vagyis", "tehát", "leg", "legjobb", "legjobban",
+    "legjobbak", "ahol", "ahogy", "ahogyan", "miközben", "amíg", "amikor",
+    "vmint", "kell", "lehet", "lesz", "volt", "voltak", "lett", "lettek",
+    "magyar", "magyarországon", "budapesten",
+}
+_STOPWORDS = _EN_STOP | _HU_STOP
+
+
+def _strip_accents(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+def _topic_tokens(text: str) -> List[str]:
+    """Lowercase, accent-strip, drop stop-words & short tokens."""
+    if not text:
+        return []
+    import re as _re
+    s = _strip_accents(text).lower()
+    # Allow apostrophes inside words; otherwise split on anything non-alphanumeric.
+    s = _re.sub(r"[^a-z0-9]+", " ", s)
+    out: List[str] = []
+    for t in s.split():
+        if not t or t in _STOPWORDS or len(t) < 3 or t.isdigit():
+            continue
+        out.append(t)
+    return out
+
+
+def _heuristic_topic_label(prompt_texts: List[str]) -> str:
+    """Pick the 1-2 most frequent content tokens across prompt texts and
+    Title-Case them. Tiny, deterministic, language-agnostic."""
+    if not prompt_texts:
+        return ""
+    counter: Counter = Counter()
+    for t in prompt_texts:
+        counter.update(_topic_tokens(t))
+    if not counter:
+        return ""
+    top = counter.most_common(3)
+    # Drop any candidate that only appears once if we have alternatives.
+    keep = [w for w, c in top if c >= 2] or [top[0][0]]
+    keep = keep[:2]
+    return " ".join(w.capitalize() for w in keep)
+
+
+async def _claude_topic_label(prompt_texts: List[str]) -> Optional[str]:
+    """Optional upgrade: ask Claude for a sharper 2-4 word label."""
+    try:
+        from .config import settings as _settings
+        if not _settings.has_claude_api:
+            return None
+        from .claude_engine import ClaudeEngine
+        engine = ClaudeEngine()
+        sample = "\n- " + "\n- ".join(t[:160] for t in prompt_texts[:8])
+        resp = await engine.call(
+            messages=[{"role": "user", "content": (
+                "Give a 2-4 word Title Case topic label for these search prompts. "
+                "Return ONLY the label, no quotes, no punctuation.\n" + sample
+            )}],
+            system="You produce concise topic labels for clusters of search prompts.",
+            max_tokens=24,
+            temperature=0.1,
+            operation="entity_graph_topic_label",
+            use_cache=True,
+        )
+        label = (resp.get("content", "") or "").strip().splitlines()[0].strip()
+        # Defensive cleanup
+        label = label.strip(' "\'.:;,').strip()
+        if 1 < len(label) <= 60:
+            return label
+        return None
+    except Exception:
+        return None
+
+
+async def relabel_topics(
+    workspace_id: str, use_claude_for_top: int = 0,
+) -> Dict[str, Any]:
+    """Replace UUID-ish topic node labels with human-readable ones.
+
+    Heuristic: for each topic node we gather every prompt whose
+    `cluster_id` matches the node's current label, tokenize the texts
+    (lowercase + accent-strip + EN/HU stop-words), and use the top 1-2
+    most frequent content tokens, Title Case.
+
+    `use_claude_for_top` (default 0): if Claude is configured, upgrade the
+    N topics with the most prompts.
+
+    Never overwrites a manual label (`label_source = 'manual'`)."""
+    await init()
+    # Pull every topic node.
+    topics = await fetch_all(
+        "SELECT id, label, meta, COALESCE(label_source,'auto') AS label_source "
+        "FROM graph_nodes WHERE workspace_id = ? AND node_type = 'topic'",
+        (workspace_id,),
+    )
+    if not topics:
+        return {"workspace_id": workspace_id, "relabeled": 0, "skipped_manual": 0,
+                "claude_upgraded": 0, "details": []}
+
+    # Pull all prompts once; group by cluster_id.
+    prompts = await fetch_all(
+        "SELECT id, text, cluster_id FROM prompts WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    by_cluster: Dict[str, List[str]] = {}
+    for p in prompts:
+        cid = _norm(p.get("cluster_id")) or "uncategorized"
+        by_cluster.setdefault(cid, []).append(p.get("text") or "")
+
+    # Compute heuristic label for each topic; sort by prompt count desc so
+    # the optional Claude upgrade hits the biggest topics first.
+    plans: List[Dict[str, Any]] = []
+    for t in topics:
+        if (t.get("label_source") or "auto") == "manual":
+            plans.append({"topic": t, "skip_reason": "manual"})
+            continue
+        cid = t.get("label") or ""
+        texts = by_cluster.get(cid) or []
+        heuristic = _heuristic_topic_label(texts)
+        plans.append({"topic": t, "texts": texts, "heuristic": heuristic,
+                      "count": len(texts)})
+
+    plans.sort(key=lambda x: -(x.get("count") or 0))
+
+    relabeled = 0
+    skipped_manual = 0
+    claude_upgraded = 0
+    details: List[Dict[str, Any]] = []
+    claude_budget = max(0, int(use_claude_for_top))
+
+    for plan in plans:
+        topic = plan["topic"]
+        if plan.get("skip_reason") == "manual":
+            skipped_manual += 1
+            details.append({
+                "id": topic["id"], "old_label": topic["label"],
+                "new_label": topic["label"], "action": "skipped_manual",
+                "confidence": "manual",
+            })
+            continue
+
+        heuristic = plan.get("heuristic") or ""
+        texts = plan.get("texts") or []
+        new_label = heuristic
+        confidence = "heuristic"
+
+        if claude_budget > 0 and texts:
+            claude_label = await _claude_topic_label(texts)
+            if claude_label:
+                new_label = claude_label
+                confidence = "claude_analyzed"
+                claude_upgraded += 1
+            claude_budget -= 1
+
+        if not new_label:
+            # Skip — nothing to write. Better to leave the UUID than corrupt.
+            details.append({
+                "id": topic["id"], "old_label": topic["label"],
+                "new_label": topic["label"], "action": "no_change",
+                "confidence": confidence,
+            })
+            continue
+        if new_label == topic["label"]:
+            details.append({
+                "id": topic["id"], "old_label": topic["label"],
+                "new_label": new_label, "action": "unchanged",
+                "confidence": confidence,
+            })
+            continue
+
+        # Honor unique (workspace_id, node_type, label) — append disambiguator if
+        # collision. Cheap pre-check.
+        clash = await fetch_one(
+            "SELECT id FROM graph_nodes WHERE workspace_id=? AND node_type='topic' "
+            "AND label=? AND id != ?",
+            (workspace_id, new_label, topic["id"]),
+        )
+        final_label = new_label
+        if clash:
+            suffix = (topic["id"] or "")[-4:]
+            final_label = f"{new_label} ({suffix})"
+
+        meta = from_json(topic.get("meta") or "{}", {}) or {}
+        meta["original_label"] = topic.get("label") or meta.get("original_label", "")
+        meta["label_confidence"] = confidence
+        try:
+            await execute(
+                "UPDATE graph_nodes SET label=?, meta=?, updated_at=datetime('now'), "
+                "label_source='auto' WHERE id=?",
+                (final_label, to_json(meta), topic["id"]),
+            )
+            relabeled += 1
+            details.append({
+                "id": topic["id"], "old_label": topic["label"],
+                "new_label": final_label, "action": "updated",
+                "confidence": confidence,
+            })
+        except Exception as e:
+            logger.warning("relabel topic %s failed: %s", topic["id"], e)
+            details.append({
+                "id": topic["id"], "old_label": topic["label"],
+                "new_label": topic["label"], "action": "error",
+                "error": str(e),
+            })
+
+    return {
+        "workspace_id": workspace_id,
+        "topics_total": len(topics),
+        "relabeled": relabeled,
+        "skipped_manual": skipped_manual,
+        "claude_upgraded": claude_upgraded,
+        "details": details,
+    }
+
+
+async def graph_insight(workspace_id: str) -> Dict[str, Any]:
+    """Aggregate insight over the entity graph for this workspace.
+
+    Returns:
+      top_brands_by_degree, top_topics, isolated_opportunities,
+      strongest_edges, citation_heavy_nodes, weakly_defended_topics,
+      summary_text
+    """
+    await init()
+    # Top brands by total degree (sum of weights on incident edges).
+    top_brands = await fetch_all(
+        "SELECT n.id, n.label AS name, "
+        " (SELECT COALESCE(SUM(weight), 0) FROM graph_edges e "
+        "  WHERE e.workspace_id=n.workspace_id AND (e.from_id=n.id OR e.to_id=n.id)) "
+        "  AS degree "
+        "FROM graph_nodes n WHERE n.workspace_id=? AND n.node_type='brand' "
+        "ORDER BY degree DESC LIMIT 10",
+        (workspace_id,),
+    )
+    # Top topics by (prompt_count, competitor_count).
+    top_topics_raw = await fetch_all(
+        "SELECT n.id, n.label, "
+        " (SELECT COUNT(*) FROM graph_edges e "
+        "  WHERE e.workspace_id=n.workspace_id AND e.to_id=n.id "
+        "    AND e.edge_type='covers_topic') AS prompt_count "
+        "FROM graph_nodes n WHERE n.workspace_id=? AND n.node_type='topic' "
+        "ORDER BY prompt_count DESC LIMIT 25",
+        (workspace_id,),
+    )
+    top_topics: List[Dict[str, Any]] = []
+    weakly_defended_topics: List[Dict[str, Any]] = []
+    isolated_opportunities: List[Dict[str, Any]] = []
+    for t in top_topics_raw:
+        topic_id = t["id"]
+        prompt_count = int(t.get("prompt_count") or 0)
+        # How many distinct brands mention prompts that cover this topic?
+        row = await fetch_one(
+            """SELECT COUNT(DISTINCT b.id) AS n
+               FROM graph_edges e_pt
+               JOIN graph_edges e_bp
+                 ON e_bp.workspace_id = e_pt.workspace_id
+                AND e_bp.to_id = e_pt.from_id
+                AND e_bp.edge_type = 'mentioned_in'
+               JOIN graph_nodes b ON b.id = e_bp.from_id AND b.node_type='brand'
+               WHERE e_pt.workspace_id = ? AND e_pt.to_id = ?
+                 AND e_pt.edge_type = 'covers_topic'""",
+            (workspace_id, topic_id),
+        )
+        competitor_count = int((row or {}).get("n", 0) or 0)
+        item = {
+            "id": topic_id,
+            "label": t["label"],
+            "prompt_count": prompt_count,
+            "competitor_count": competitor_count,
+        }
+        top_topics.append(item)
+        if competitor_count == 0 and prompt_count > 0:
+            isolated_opportunities.append({
+                "topic_id": topic_id,
+                "topic_label": t["label"],
+                "prompt_count": prompt_count,
+                "reason": "no_brand_mentioned",
+            })
+        elif competitor_count <= 1 and prompt_count >= 2:
+            weakly_defended_topics.append({
+                "topic_id": topic_id,
+                "topic_label": t["label"],
+                "prompt_count": prompt_count,
+                "competitor_count": competitor_count,
+                "reason": "fragmented_or_open",
+            })
+
+    # Strongest individual edges (weight).
+    strongest_edge_rows = await fetch_all(
+        "SELECT e.from_id, e.to_id, e.edge_type, e.weight, "
+        " nf.node_type AS from_type, nf.label AS from_label, "
+        " nt.node_type AS to_type, nt.label AS to_label "
+        "FROM graph_edges e "
+        "JOIN graph_nodes nf ON nf.id=e.from_id "
+        "JOIN graph_nodes nt ON nt.id=e.to_id "
+        "WHERE e.workspace_id=? ORDER BY e.weight DESC LIMIT 15",
+        (workspace_id,),
+    )
+    strongest_edges = [
+        {
+            "edge_type": r["edge_type"],
+            "weight": r["weight"],
+            "from": {"type": r["from_type"], "label": r["from_label"]},
+            "to": {"type": r["to_type"], "label": r["to_label"]},
+        }
+        for r in strongest_edge_rows
+    ]
+
+    # Citation-heavy URLs: top URLs by sum of cited_in / cited_at weight.
+    citation_heavy = await fetch_all(
+        "SELECT n.id, n.label AS url, n.meta, "
+        " (SELECT COALESCE(SUM(weight), 0) FROM graph_edges e "
+        "  WHERE e.workspace_id=n.workspace_id AND e.from_id=n.id "
+        "    AND e.edge_type IN ('cited_in','cited_at')) AS citation_weight "
+        "FROM graph_nodes n WHERE n.workspace_id=? AND n.node_type='url' "
+        "ORDER BY citation_weight DESC LIMIT 15",
+        (workspace_id,),
+    )
+    citation_heavy_nodes = [
+        {
+            "url": r["url"],
+            "domain": (from_json(r.get("meta") or "{}", {}) or {}).get("domain", ""),
+            "citation_weight": r["citation_weight"],
+        }
+        for r in citation_heavy
+        if (r.get("citation_weight") or 0) > 0
+    ]
+
+    n_brands = len(top_brands)
+    n_topics = len(top_topics)
+    summary_text = (
+        f"{n_topics} topic(s) tracked; "
+        f"{len(isolated_opportunities)} with no clear brand owner, "
+        f"{len(weakly_defended_topics)} weakly defended. "
+        f"Top brand by degree: "
+        f"{(top_brands[0]['name'] if top_brands else 'n/a')}. "
+        f"{len(citation_heavy_nodes)} citation-heavy URL(s)."
+    )
+
+    return {
+        "workspace_id": workspace_id,
+        "top_brands_by_degree": [
+            {"name": r["name"], "degree": r["degree"]} for r in top_brands
+        ],
+        "top_topics": top_topics[:15],
+        "isolated_opportunities": isolated_opportunities[:15],
+        "strongest_edges": strongest_edges,
+        "citation_heavy_nodes": citation_heavy_nodes,
+        "weakly_defended_topics": weakly_defended_topics[:15],
+        "summary_text": summary_text,
+    }
+
+
 async def get_graph_json(workspace_id: str, top_n_nodes: int = 80) -> Dict[str, Any]:
     """D3-ready {nodes:[...], links:[...]}. Caps nodes for browser sanity."""
     top_n_nodes = max(10, min(int(top_n_nodes), 500))

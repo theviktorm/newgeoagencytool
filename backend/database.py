@@ -774,6 +774,17 @@ async def _migrate(db: aiosqlite.Connection):
         "ALTER TABLE prompts ADD COLUMN ownership_level INTEGER DEFAULT 0",
         "ALTER TABLE prompts ADD COLUMN ownership_status TEXT DEFAULT ''",
         "ALTER TABLE prompts ADD COLUMN last_tracked_at TEXT",
+        # Explainability Phase 3: comparative citation intelligence
+        "ALTER TABLE citation_diagnostics ADD COLUMN our_url TEXT DEFAULT ''",
+        "ALTER TABLE citation_diagnostics ADD COLUMN recommended_action TEXT DEFAULT ''",
+        "ALTER TABLE citation_diagnostics ADD COLUMN expected_impact TEXT DEFAULT ''",
+        "ALTER TABLE citation_diagnostics ADD COLUMN difficulty TEXT DEFAULT ''",
+        "ALTER TABLE citation_diagnostics ADD COLUMN confidence TEXT DEFAULT 'estimated'",
+        "ALTER TABLE citation_diagnostics ADD COLUMN source_label TEXT DEFAULT 'claude_analyzed'",
+        # Phase 3: graph node label provenance (auto vs manual)
+        "ALTER TABLE graph_nodes ADD COLUMN label_source TEXT DEFAULT 'auto'",
+        # Phase 3: tracked competitor flag
+        "ALTER TABLE competitor_capabilities ADD COLUMN tracked INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         try:

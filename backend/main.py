@@ -602,6 +602,8 @@ from . import (
     metric_dictionary, ownership,
     # Explainability layer (Phase 2)
     citation_breakdown,
+    # Explainability layer (Phase 3)
+    competitor_profile,
 )
 from fastapi.responses import Response
 
@@ -762,6 +764,31 @@ async def intel_list(ws_id: str, limit: int = 100):
     return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
 
 
+# ─── Phase 3: Comparative Citation Intelligence ────────────────
+
+@app.post("/api/intel/{ws_id}/compare/{prompt_id}")
+async def intel_compare(
+    ws_id: str, prompt_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+):
+    """us vs. competitor structured comparison for ONE prompt."""
+    p = payload or {}
+    res = await citation_intelligence.comparative_diagnose(
+        ws_id, prompt_id,
+        competitor_domain=(p.get("competitor_domain") or ""),
+        our_url=(p.get("our_url") or ""),
+        manual_competitor_url=(p.get("manual_competitor_url") or ""),
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/intel/diagnosis/{diagnosis_id}/push-actions")
+async def intel_push_actions(diagnosis_id: str):
+    """Convert a citation_diagnostics row into geo_actions (idempotent)."""
+    res = await citation_intelligence.push_diagnosis_to_actions(diagnosis_id)
+    return ApiResponse(data=res).dict()
+
+
 # ─── 3. GEO Attack Map ─────────────────────────────────────────
 
 @app.get("/api/attack-map/{ws_id}")
@@ -790,6 +817,13 @@ async def attack_map_analyze_all(ws_id: str, max_competitors: int = 12):
 async def attack_map_movements(ws_id: str, days: int = 14):
     rows = await attack_map.list_movements(ws_id, days=days)
     return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.post("/api/attack-map/{ws_id}/{domain}/push-actions")
+async def attack_map_push_actions(ws_id: str, domain: str):
+    """Turn the recommended attack for a competitor into 2-4 geo_actions."""
+    res = await attack_map.push_attack_to_actions(ws_id, domain)
+    return ApiResponse(data=res).dict()
 
 
 # ─── 4. Revenue Priority Layer ─────────────────────────────────
@@ -1137,6 +1171,47 @@ async def graph_explain(ws_id: str, payload: Dict[str, Any]):
     if not pid or not brand:
         raise HTTPException(400, "prompt_id and competitor_brand required")
     res = await entity_graph.explain_why_wins(ws_id, pid, brand)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Phase 3: Graph topic relabel + aggregate insight ─────────
+
+@app.post("/api/graph/{ws_id}/relabel-topics")
+async def graph_relabel_topics(
+    ws_id: str, payload: Optional[Dict[str, Any]] = None,
+):
+    """Replace UUID-ish topic labels with human-readable ones."""
+    p = payload or {}
+    res = await entity_graph.relabel_topics(
+        ws_id, use_claude_for_top=int(p.get("use_claude_for_top", 0)),
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/graph/{ws_id}/insight")
+async def graph_insight_route(ws_id: str):
+    """Aggregate insight: top brands/topics, isolated opportunities, etc."""
+    res = await entity_graph.graph_insight(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Phase 3: Competitor Analysis Profiles ────────────────────
+
+@app.get("/api/competitors/{ws_id}/tracked")
+async def competitors_list_tracked(ws_id: str):
+    rows = await competitor_profile.list_tracked_competitors(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows)}).dict()
+
+
+@app.get("/api/competitors/{ws_id}/{domain}/profile")
+async def competitor_profile_route(ws_id: str, domain: str):
+    res = await competitor_profile.competitor_profile(ws_id, domain)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/competitors/{ws_id}/{domain}/track")
+async def competitor_track_route(ws_id: str, domain: str):
+    res = await competitor_profile.track_competitor(ws_id, domain)
     return ApiResponse(data=res).dict()
 
 

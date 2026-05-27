@@ -167,11 +167,20 @@ async def analyze_competitor(
 
 
 async def list_attack_map(workspace_id: str) -> List[Dict[str, Any]]:
-    return await fetch_all(
+    rows = await fetch_all(
         "SELECT * FROM competitor_capabilities WHERE workspace_id = ? "
         "ORDER BY overall_strength DESC",
         (workspace_id,),
     )
+    # Phase 3: enrich each row with confidence + recommendation. Non-breaking:
+    # extra keys are added; existing keys are preserved.
+    for r in rows:
+        try:
+            r.update(await _enrich_capability_row(workspace_id, r))
+        except Exception as e:
+            logger.warning("attack-map enrich failed for %s: %s",
+                           r.get("competitor_domain", "?"), e)
+    return rows
 
 
 async def analyze_all_known(workspace_id: str, max_competitors: int = 12) -> Dict[str, Any]:
@@ -448,3 +457,269 @@ def _safe_json(text: str) -> Optional[Dict[str, Any]]:
         return json.loads(t[s:e + 1])
     except Exception:
         return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3 — CAPABILITY ROW ENRICHMENT + ACTION PUSH
+# Adds per-row {confidence, last_analyzed_at, data_source, open_flank,
+# recommended_attack, effort, potential_impact}. Non-breaking — extra keys.
+# ═══════════════════════════════════════════════════════════════
+
+# Map "weakest axis" → recommended attack copy + effort/impact.
+_ATTACK_BY_AXIS: Dict[str, Dict[str, str]] = {
+    "schema_score": {
+        "attack": "Install missing schema.org markup (Physician/MedicalOrg/FAQ/Review). Schema is their thinnest axis — own it.",
+        "effort": "low", "impact": "medium",
+    },
+    "reddit_score": {
+        "attack": "Seed credible Reddit answers + AMAs. Their absence from Reddit is the open flank.",
+        "effort": "medium", "impact": "high",
+    },
+    "youtube_score": {
+        "attack": "Publish expert YouTube videos with chapters + VideoObject schema, embed on key pages.",
+        "effort": "medium", "impact": "medium",
+    },
+    "faq_depth_score": {
+        "attack": "Add deep FAQ sections that mirror real AI prompts; mark up with FAQPage schema.",
+        "effort": "low", "impact": "high",
+    },
+    "decision_support_score": {
+        "attack": "Build comparison/decision pages + Physician schema + review proof.",
+        "effort": "medium", "impact": "high",
+    },
+    "review_score": {
+        "attack": "Aggregate verified reviews on-site + Review/AggregateRating schema.",
+        "effort": "low", "impact": "medium",
+    },
+    "entity_consistency_score": {
+        "attack": "Tighten brand entity: consistent NAP, sameAs links, Person bios across all pages.",
+        "effort": "low", "impact": "medium",
+    },
+    "pr_score": {
+        "attack": "Earn PR mentions in trusted publishers (interviews, expert quotes) and link back.",
+        "effort": "high", "impact": "high",
+    },
+    "local_authority_score": {
+        "attack": "Strengthen local signals: LocalBusiness schema, branch pages, local citations.",
+        "effort": "medium", "impact": "medium",
+    },
+}
+
+# Action-type each axis maps to (drives push_attack_to_actions).
+_AXIS_TO_ACTION_TYPE: Dict[str, str] = {
+    "schema_score": "schema_install",
+    "reddit_score": "reddit_seed",
+    "youtube_score": "content_brief",
+    "faq_depth_score": "content_brief",
+    "decision_support_score": "comparison_page",
+    "review_score": "schema_install",
+    "entity_consistency_score": "metadata_rewrite",
+    "pr_score": "content_brief",
+    "local_authority_score": "schema_install",
+}
+
+
+async def _enrich_capability_row(
+    workspace_id: str, row: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Derive {confidence, last_analyzed_at, data_source, open_flank,
+    recommended_attack, effort, potential_impact} for a capability row."""
+    domain = (row.get("competitor_domain") or "").lower()
+    scores = {a: float(row.get(a) or 0.0) for a in AXES}
+    # Strongest two axes + weakest one.
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    strongest = [a for a, _ in ranked[:2]]
+    weakest_axis = (row.get("weakest_axis") or ranked[-1][0]) if ranked else ""
+    weakest_score = float(row.get("weakest_axis_score") or (ranked[-1][1] if ranked else 0.0))
+    attack = _ATTACK_BY_AXIS.get(weakest_axis, {
+        "attack": "Diagnose this competitor with `comparative_diagnose` to find the thinnest axis, then publish a stronger decision page.",
+        "effort": "medium", "impact": "medium",
+    })
+    open_flank_text = ", ".join(strongest) + (f" (weakest: {weakest_axis})" if weakest_axis else "")
+
+    # How many pages we actually scraped (sources rows on this domain).
+    scraped_pages = 0
+    try:
+        r = await fetch_one(
+            "SELECT COUNT(*) AS n FROM sources WHERE project_id = ? AND url LIKE ?",
+            (workspace_id, f"%{domain}%"),
+        )
+        scraped_pages = int((r or {}).get("n", 0))
+    except Exception:
+        scraped_pages = 0
+    # Observation counts (prompts where this domain was mentioned).
+    obs_count = 0
+    try:
+        r = await fetch_one(
+            "SELECT COUNT(*) AS n FROM prompt_observations WHERE workspace_id = ? "
+            "AND (brands_appeared LIKE ? OR sources_cited LIKE ?)",
+            (workspace_id, f"%{domain}%", f"%{domain}%"),
+        )
+        obs_count = int((r or {}).get("n", 0))
+    except Exception:
+        obs_count = 0
+
+    has_summary = bool((row.get("summary") or "").strip())
+    # Confidence ladder:
+    #   verified         — scraped pages + Claude summary + observations
+    #   claude_analyzed  — Claude summary present (may lack pages or obs)
+    #   scraped          — scraped pages but no Claude refinement
+    #   observation_only — only observations exist (CSV-seeded)
+    #   seeded           — nothing but a row exists
+    if scraped_pages and has_summary and obs_count:
+        confidence = "verified"
+        data_source = "scraped"
+    elif has_summary:
+        confidence = "claude_analyzed"
+        data_source = "scraped" if scraped_pages else "observation_only"
+    elif scraped_pages:
+        confidence = "scraped"
+        data_source = "scraped"
+    elif obs_count:
+        confidence = "observation_only"
+        data_source = "observation_only"
+    else:
+        confidence = "seeded"
+        data_source = "seeded"
+
+    return {
+        "confidence": confidence,
+        "last_analyzed_at": row.get("analyzed_at") or "",
+        "data_source": data_source,
+        "scraped_pages": scraped_pages,
+        "observation_count": obs_count,
+        "open_flank": open_flank_text,
+        "recommended_attack": attack["attack"],
+        "effort": attack["effort"],
+        "potential_impact": attack["impact"],
+        "weakest_axis_resolved": weakest_axis,
+        "weakest_axis_score_resolved": weakest_score,
+    }
+
+
+# Step text -> action_type fallback (mirrors action_engine._step_to_type).
+def _step_to_action_type(step: str) -> str:
+    s = (step or "").lower()
+    if "schema" in s or "json-ld" in s or "jsonld" in s or "structured data" in s:
+        return "schema_install"
+    if "reddit" in s or "subreddit" in s or "forum" in s or "community" in s:
+        return "reddit_seed"
+    if "compare" in s or "comparison" in s or "vs " in s or "versus" in s or "alternative" in s:
+        return "comparison_page"
+    if "meta" in s or "title tag" in s or "snippet" in s or "description" in s:
+        return "metadata_rewrite"
+    if "rebut" in s or "respond" in s or "response" in s or "correct" in s or "factual" in s:
+        return "citation_response"
+    return "content_brief"
+
+
+async def push_attack_to_actions(
+    workspace_id: str, competitor_domain: str,
+) -> Dict[str, Any]:
+    """Turn the recommended_attack for one competitor into 2-4 geo_actions
+    rows. Idempotent on (workspace_id, action_type, source_id)."""
+    domain = (competitor_domain or "").lower().lstrip(".").lstrip("www.")
+    if not domain:
+        raise ValueError("competitor_domain required")
+    row = await fetch_one(
+        "SELECT * FROM competitor_capabilities WHERE workspace_id = ? AND competitor_domain = ?",
+        (workspace_id, domain),
+    )
+    if not row:
+        raise ValueError(f"no capability row for {domain}; analyze first")
+    enrich = await _enrich_capability_row(workspace_id, row)
+    weakest = enrich.get("weakest_axis_resolved") or ""
+
+    # Lazy import action_engine to register schema if needed.
+    from . import action_engine as _act
+    try:
+        await _act.init()
+    except Exception as e:
+        logger.warning("action_engine.init failed: %s", e)
+
+    async def _insert(at: str, title: str, desc: str, sub_id: str,
+                      priority: float = 65.0, impact: str = "") -> Optional[str]:
+        if at not in _act.ACTION_TYPES:
+            return None
+        sid = f"am:{domain}:{sub_id}"
+        existing = await fetch_one(
+            "SELECT 1 FROM geo_actions WHERE workspace_id=? AND action_type=? AND source_id=? LIMIT 1",
+            (workspace_id, at, sid),
+        )
+        if existing:
+            return None
+        aid = gen_id("act-")
+        await execute(
+            "INSERT INTO geo_actions "
+            "(id, workspace_id, action_type, status, title, description, source_kind, "
+            " source_id, target_url, target_prompt_id, priority, estimated_impact, payload) "
+            "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                aid, workspace_id, at, title[:300], desc[:2000],
+                "competitor_capabilities", sid, "", "",
+                float(priority), impact[:200],
+                to_json({
+                    "competitor_domain": domain,
+                    "weakest_axis": weakest,
+                    "open_flank": enrich.get("open_flank", ""),
+                    "effort": enrich.get("effort", ""),
+                    "potential_impact": enrich.get("potential_impact", ""),
+                }),
+            ),
+        )
+        return aid
+
+    created: List[Dict[str, str]] = []
+    skipped: List[str] = []
+
+    # 1. Primary attack derived from weakest axis.
+    primary_attack = enrich.get("recommended_attack") or ""
+    if primary_attack:
+        at_primary = _AXIS_TO_ACTION_TYPE.get(weakest, _step_to_action_type(primary_attack))
+        aid = await _insert(
+            at_primary,
+            title=f"Attack {domain} via {weakest or 'weakest axis'}",
+            desc=primary_attack,
+            sub_id=f"axis:{weakest or 'primary'}",
+            priority=80.0,
+            impact=enrich.get("potential_impact", ""),
+        )
+        if aid:
+            created.append({"action_id": aid, "type": at_primary, "category": "primary"})
+        else:
+            skipped.append("primary")
+
+    # 2-3. Follow-ups against the 1-2 other lowest axes (so we get 2-4 rows).
+    scores = sorted(
+        ((a, float(row.get(a) or 0.0)) for a in AXES),
+        key=lambda kv: kv[1],
+    )
+    for axis, score in scores[1:3]:
+        if axis == weakest:
+            continue
+        ax = _ATTACK_BY_AXIS.get(axis)
+        if not ax:
+            continue
+        at = _AXIS_TO_ACTION_TYPE.get(axis, "content_brief")
+        aid = await _insert(
+            at,
+            title=f"Press {domain} on {axis} ({round(score)}/100)",
+            desc=ax["attack"],
+            sub_id=f"axis:{axis}",
+            priority=60.0,
+            impact=ax["impact"],
+        )
+        if aid:
+            created.append({"action_id": aid, "type": at, "category": axis})
+        else:
+            skipped.append(axis)
+
+    return {
+        "workspace_id": workspace_id,
+        "competitor_domain": domain,
+        "weakest_axis": weakest,
+        "created": len(created),
+        "skipped": len(skipped),
+        "actions": created,
+        "skipped_details": skipped,
+    }
