@@ -12,7 +12,10 @@ approvable actions and — where safe — generates the deliverable with Claude.
 
 action_type ∈ {schema_install, content_brief, reddit_seed, metadata_rewrite,
                citation_response, comparison_page}
-status      ∈ {pending, generated, approved, dismissed, done}
+status      ∈ {pending, generated, approved, in_progress, waiting_review,
+               published, re_track_scheduled, completed, rejected,
+               dismissed, done}  # `done` kept as a legacy alias for completed
+workflow_stage ∈ {detect, diagnose, prioritize, execute, publish, remeasure}
 
 Self-registers schema via init() (brand_resolver / entity_graph pattern).
 Defensive: every diagnostic-table read is wrapped so a fresh workspace with
@@ -39,7 +42,32 @@ ACTION_TYPES = {
     "schema_install", "content_brief", "reddit_seed",
     "metadata_rewrite", "citation_response", "comparison_page",
 }
-STATUSES = {"pending", "generated", "approved", "dismissed", "done"}
+# Closed-loop lifecycle: recommended → approved → in_progress → waiting_review
+# → published → re_track_scheduled → completed → rejected. The legacy buckets
+# (pending/generated/dismissed/done) are preserved so existing rows + callers
+# never break.
+STATUSES = {
+    "pending", "generated", "approved", "dismissed", "done",
+    "recommended", "in_progress", "waiting_review", "published",
+    "re_track_scheduled", "completed", "rejected",
+}
+
+# Status → workflow_stage map used by update_status. Stages mirror the
+# Detect→Diagnose→Prioritize→Execute→Publish→Re-measure pipeline.
+STATUS_TO_STAGE: Dict[str, str] = {
+    "pending": "detect",
+    "recommended": "detect",
+    "generated": "diagnose",
+    "approved": "prioritize",
+    "in_progress": "execute",
+    "waiting_review": "execute",
+    "published": "publish",
+    "re_track_scheduled": "remeasure",
+    "completed": "remeasure",
+    "done": "remeasure",
+    "dismissed": "detect",
+    "rejected": "detect",
+}
 
 
 _SCHEMA = """
@@ -64,13 +92,50 @@ CREATE TABLE IF NOT EXISTS geo_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_geoact_workspace ON geo_actions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_geoact_status ON geo_actions(status);
+
+-- Closed-loop re-track queue: rows scheduled by schedule_retrack(), then
+-- drained by run_due_retracks(). Status: pending | done | error.
+CREATE TABLE IF NOT EXISTS re_track_queue (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    action_id           TEXT NOT NULL,
+    scheduled_at        TEXT NOT NULL,
+    status              TEXT DEFAULT 'pending',
+    tracking_run_id     TEXT DEFAULT '',
+    created_at          TEXT DEFAULT (datetime('now')),
+    completed_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_retrack_ws ON re_track_queue(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_retrack_status ON re_track_queue(status);
+CREATE INDEX IF NOT EXISTS idx_retrack_action ON re_track_queue(action_id);
 """
+
+
+# Idempotent ALTER TABLE migrations applied on every init(). Each is wrapped
+# so a duplicate column does not abort the others (SQLite raises). Mirrors the
+# pattern in database._migrate.
+_MIGRATIONS = [
+    "ALTER TABLE geo_actions ADD COLUMN owner TEXT DEFAULT ''",
+    "ALTER TABLE geo_actions ADD COLUMN due_date TEXT",
+    "ALTER TABLE geo_actions ADD COLUMN published_url TEXT DEFAULT ''",
+    "ALTER TABLE geo_actions ADD COLUMN re_track_scheduled_at TEXT",
+    "ALTER TABLE geo_actions ADD COLUMN re_track_run_id TEXT DEFAULT ''",
+    "ALTER TABLE geo_actions ADD COLUMN before_snapshot TEXT DEFAULT '{}'",
+    "ALTER TABLE geo_actions ADD COLUMN after_snapshot TEXT DEFAULT '{}'",
+    "ALTER TABLE geo_actions ADD COLUMN workflow_stage TEXT DEFAULT 'detect'",
+]
 
 
 async def init() -> None:
     """Create the geo_actions table + indexes. Idempotent."""
     db = await get_db()
     await db.executescript(_SCHEMA)
+    for sql in _MIGRATIONS:
+        try:
+            await db.execute(sql)
+        except Exception:
+            # column already exists or table not yet present — ignore.
+            pass
     await db.commit()
 
 
@@ -436,24 +501,296 @@ async def list_actions(
 
 
 async def update_status(action_id: str, status: str) -> Dict[str, Any]:
-    """Approve / dismiss / mark done. Sets completed_at when status='done'."""
+    """Move an action through the closed-loop lifecycle.
+
+    Updates status + workflow_stage (via STATUS_TO_STAGE), sets timestamps
+    where the lifecycle implies them, and triggers side-effects:
+
+      published      → captures a before_snapshot of authority/ownership/
+                       citation state for later before/after measurement.
+      completed/done → sets completed_at.
+
+    Legacy statuses (pending/generated/approved/dismissed/done) still work —
+    they map onto the new stages too.
+    """
     if status not in STATUSES:
         raise ValueError(f"invalid status '{status}' (allowed: {sorted(STATUSES)})")
     action = await fetch_one("SELECT * FROM geo_actions WHERE id = ?", (action_id,))
     if not action:
         raise ValueError(f"unknown action {action_id}")
-    if status == "done":
+
+    stage = STATUS_TO_STAGE.get(status, action.get("workflow_stage") or "detect")
+
+    if status == "published":
+        # Side-effect: snapshot BEFORE state at the moment of publication.
+        try:
+            await take_before_snapshot(action.get("workspace_id") or "", action_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("take_before_snapshot failed for %s: %s", action_id, e)
+
+    if status in ("done", "completed"):
         await execute(
-            "UPDATE geo_actions SET status = ?, completed_at = datetime('now'), "
-            "updated_at = datetime('now') WHERE id = ?",
-            (status, action_id),
+            "UPDATE geo_actions SET status = ?, workflow_stage = ?, "
+            "completed_at = datetime('now'), updated_at = datetime('now') "
+            "WHERE id = ?",
+            (status, stage, action_id),
         )
     else:
         await execute(
-            "UPDATE geo_actions SET status = ?, updated_at = datetime('now') WHERE id = ?",
-            (status, action_id),
+            "UPDATE geo_actions SET status = ?, workflow_stage = ?, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (status, stage, action_id),
         )
     return await fetch_one("SELECT * FROM geo_actions WHERE id = ?", (action_id,)) or {}
+
+
+# ─────────────────────────────────────────────────────────────────
+# CLOSED-LOOP WORKFLOW: snapshots + re-track scheduling
+# ─────────────────────────────────────────────────────────────────
+
+async def _snapshot_payload(workspace_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the smallest useful slice of state for before/after comparison:
+    latest authority_scores row + prompt_ownership for the related prompt +
+    a count of aio_tracking observations + the latest tracking_runs row.
+
+    Every read is defensive — empty workspace returns shaped zeros."""
+    snap: Dict[str, Any] = {"taken_at": None}
+    try:
+        auth = await fetch_one(
+            "SELECT total_score, citation_score, prompt_ownership_score, "
+            "schema_score, offsite_score, reddit_score, entity_score, "
+            "local_score, observed_at, subject_domain "
+            "FROM authority_scores WHERE workspace_id = ? AND is_us = 1 "
+            "ORDER BY observed_at DESC LIMIT 1",
+            (workspace_id,),
+        )
+        snap["authority"] = auth or {}
+    except Exception:
+        snap["authority"] = {}
+
+    pid = action.get("target_prompt_id") or ""
+    if pid:
+        try:
+            snap["prompt_ownership"] = await fetch_one(
+                "SELECT * FROM prompt_ownership WHERE workspace_id = ? AND prompt_id = ?",
+                (workspace_id, pid),
+            ) or {}
+        except Exception:
+            snap["prompt_ownership"] = {}
+    else:
+        snap["prompt_ownership"] = {}
+
+    try:
+        aio = await fetch_one(
+            "SELECT COUNT(*) AS n, "
+            "SUM(CASE WHEN our_brand_in_aio = 1 THEN 1 ELSE 0 END) AS ours "
+            "FROM aio_tracking WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        snap["aio_tracking"] = {
+            "count": int((aio or {}).get("n") or 0),
+            "our_brand_in_aio": int((aio or {}).get("ours") or 0),
+        }
+    except Exception:
+        snap["aio_tracking"] = {"count": 0, "our_brand_in_aio": 0}
+
+    try:
+        run = await fetch_one(
+            "SELECT id, started_at, finished_at, prompts_checked, new_wins, "
+            "new_losses, data_source, confidence "
+            "FROM tracking_runs WHERE workspace_id = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (workspace_id,),
+        )
+        snap["tracking_run"] = run or {}
+    except Exception:
+        snap["tracking_run"] = {}
+
+    # Best-effort UTC timestamp.
+    try:
+        from datetime import datetime, timezone
+        snap["taken_at"] = datetime.now(timezone.utc).isoformat()
+    except Exception:
+        snap["taken_at"] = None
+    return snap
+
+
+async def take_before_snapshot(workspace_id: str, action_id: str) -> Dict[str, Any]:
+    """Capture the BEFORE state on a geo_actions row. Idempotent — overwrites
+    the existing before_snapshot. Returns the snapshot dict."""
+    action = await fetch_one("SELECT * FROM geo_actions WHERE id = ?", (action_id,))
+    if not action:
+        raise ValueError(f"unknown action {action_id}")
+    snap = await _snapshot_payload(workspace_id or action.get("workspace_id") or "", action)
+    await execute(
+        "UPDATE geo_actions SET before_snapshot = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (to_json(snap), action_id),
+    )
+    return snap
+
+
+async def take_after_snapshot(workspace_id: str, action_id: str) -> Dict[str, Any]:
+    """Capture the AFTER state on a geo_actions row. Idempotent."""
+    action = await fetch_one("SELECT * FROM geo_actions WHERE id = ?", (action_id,))
+    if not action:
+        raise ValueError(f"unknown action {action_id}")
+    snap = await _snapshot_payload(workspace_id or action.get("workspace_id") or "", action)
+    await execute(
+        "UPDATE geo_actions SET after_snapshot = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (to_json(snap), action_id),
+    )
+    return snap
+
+
+async def schedule_retrack(
+    workspace_id: str, action_id: str, days_from_now: int = 7,
+) -> Dict[str, Any]:
+    """Queue a re-track N days out. Sets the action to re_track_scheduled,
+    writes a row to re_track_queue, and stamps re_track_scheduled_at."""
+    action = await fetch_one("SELECT * FROM geo_actions WHERE id = ?", (action_id,))
+    if not action:
+        raise ValueError(f"unknown action {action_id}")
+    from datetime import datetime, timedelta, timezone
+    when = datetime.now(timezone.utc) + timedelta(days=int(max(0, days_from_now)))
+    when_iso = when.replace(microsecond=0).isoformat()
+
+    qid = gen_id("rtq-")
+    await execute(
+        "INSERT INTO re_track_queue (id, workspace_id, action_id, scheduled_at, status) "
+        "VALUES (?, ?, ?, ?, 'pending')",
+        (qid, workspace_id or action.get("workspace_id") or "", action_id, when_iso),
+    )
+    await execute(
+        "UPDATE geo_actions SET status = 're_track_scheduled', "
+        "workflow_stage = 'remeasure', re_track_scheduled_at = ?, "
+        "updated_at = datetime('now') WHERE id = ?",
+        (when_iso, action_id),
+    )
+    return {
+        "queue_id": qid, "action_id": action_id,
+        "scheduled_at": when_iso, "days_from_now": int(days_from_now),
+        "status": "re_track_scheduled",
+    }
+
+
+async def run_due_retracks(workspace_id: Optional[str] = None) -> Dict[str, Any]:
+    """Drain re_track_queue rows whose scheduled_at has passed.
+
+    For each due row: (best-effort) call prompt_tracker.track_workspace so a
+    fresh ownership snapshot exists, capture the after_snapshot, mark the
+    action `completed`, and the queue row `done`. Tolerates missing API keys
+    — track_workspace gracefully falls back to peec_replay.
+    """
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    if workspace_id:
+        rows = await fetch_all(
+            "SELECT * FROM re_track_queue WHERE workspace_id = ? "
+            "AND status = 'pending' AND scheduled_at <= ? "
+            "ORDER BY scheduled_at ASC",
+            (workspace_id, now_iso),
+        )
+    else:
+        rows = await fetch_all(
+            "SELECT * FROM re_track_queue WHERE status = 'pending' "
+            "AND scheduled_at <= ? ORDER BY scheduled_at ASC",
+            (now_iso,),
+        )
+
+    processed = 0
+    completed = 0
+    errors = 0
+    details: List[Dict[str, Any]] = []
+    for row in rows:
+        ws = row.get("workspace_id") or ""
+        aid = row.get("action_id") or ""
+        tracking_run_id = ""
+        try:
+            # Best-effort: pull a fresh ownership/observation snapshot.
+            try:
+                from . import prompt_tracker as _pt
+                res = await _pt.track_workspace(
+                    ws, only_high_value=True, max_prompts=25,
+                )
+                tracking_run_id = (res or {}).get("run_id") or ""
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("retrack track_workspace failed ws=%s: %s", ws, e)
+
+            await take_after_snapshot(ws, aid)
+            await execute(
+                "UPDATE geo_actions SET status = 'completed', "
+                "workflow_stage = 'remeasure', re_track_run_id = ?, "
+                "completed_at = datetime('now'), updated_at = datetime('now') "
+                "WHERE id = ?",
+                (tracking_run_id, aid),
+            )
+            await execute(
+                "UPDATE re_track_queue SET status = 'done', "
+                "completed_at = datetime('now'), tracking_run_id = ? "
+                "WHERE id = ?",
+                (tracking_run_id, row["id"]),
+            )
+            completed += 1
+            details.append({"action_id": aid, "ok": True,
+                            "tracking_run_id": tracking_run_id})
+        except Exception as e:
+            errors += 1
+            logger.warning("run_due_retracks: action %s failed: %s", aid, e)
+            try:
+                await execute(
+                    "UPDATE re_track_queue SET status = 'error', "
+                    "completed_at = datetime('now') WHERE id = ?",
+                    (row["id"],),
+                )
+            except Exception:
+                pass
+            details.append({"action_id": aid, "ok": False, "error": str(e)})
+        processed += 1
+
+    return {
+        "workspace_id": workspace_id,
+        "processed": processed, "completed": completed, "errors": errors,
+        "details": details[:50],
+        "confidence": "verified" if completed else "estimated",
+    }
+
+
+async def workflow_summary(workspace_id: str) -> Dict[str, Any]:
+    """Counts per workflow_stage and per status, plus pending re-tracks.
+
+    Defensive — empty workspace returns shaped zeros."""
+    stage_rows = await fetch_all(
+        "SELECT workflow_stage, COUNT(*) c FROM geo_actions "
+        "WHERE workspace_id = ? GROUP BY workflow_stage",
+        (workspace_id,),
+    )
+    status_rows = await fetch_all(
+        "SELECT status, COUNT(*) c FROM geo_actions WHERE workspace_id = ? "
+        "GROUP BY status",
+        (workspace_id,),
+    )
+    pending_retracks = await fetch_all(
+        "SELECT id, action_id, scheduled_at, tracking_run_id "
+        "FROM re_track_queue WHERE workspace_id = ? AND status = 'pending' "
+        "ORDER BY scheduled_at ASC LIMIT 100",
+        (workspace_id,),
+    )
+    by_stage = {r.get("workflow_stage") or "detect": int(r["c"]) for r in stage_rows}
+    # Ensure every canonical stage shows up.
+    for st in ("detect", "diagnose", "prioritize", "execute", "publish", "remeasure"):
+        by_stage.setdefault(st, 0)
+    by_status = {r["status"]: int(r["c"]) for r in status_rows}
+    total = sum(by_status.values())
+    return {
+        "workspace_id": workspace_id,
+        "total": total,
+        "by_stage": by_stage,
+        "by_status": by_status,
+        "pending_re_tracks": pending_retracks,
+        "confidence": "estimated",
+    }
 
 
 async def queue_summary(workspace_id: str) -> Dict[str, Any]:
@@ -488,4 +825,6 @@ async def queue_summary(workspace_id: str) -> Dict[str, Any]:
 __all__ = [
     "init", "harvest_actions", "generate_action", "list_actions",
     "update_status", "queue_summary", "ACTION_TYPES", "STATUSES",
+    "STATUS_TO_STAGE", "take_before_snapshot", "take_after_snapshot",
+    "schedule_retrack", "run_due_retracks", "workflow_summary",
 ]

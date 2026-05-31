@@ -333,3 +333,133 @@ def _suggest_action(sub: str, disc_type: str, is_gap: bool, our_present: bool) -
 def _extract_subreddit(url: str) -> str:
     m = re.search(r"reddit\.com/r/([^/]+)", url or "")
     return m.group(1).lower() if m else ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# COMMUNITY HELPERS (Phase 4)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Pure aggregation over existing `reddit_intel` rows. No live fetch — these
+# helpers shape the existing observations into "what should I post about, in
+# which community, with what angle" so the front end can show a Community
+# Opportunities board next to the Action Engine.
+
+def _infer_intent(title: str) -> str:
+    """Cheap heuristic: comparison > local > informational."""
+    t = (title or "").lower()
+    if any(w in t for w in (" vs ", " or ", "compare", "alternative", "better than")):
+        return "comparison"
+    if any(w in t for w in ("near me", "in london", "in nyc", "local", "near ")):
+        return "local"
+    return "informational"
+
+
+def _question_form(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    if t.endswith("?"):
+        return t
+    lowered = t.lower()
+    if lowered.startswith(("how", "what", "why", "when", "where", "who", "which", "is ", "are ", "do ", "does ")):
+        return t.rstrip(".!") + "?"
+    return f"What's the best way to think about: {t.rstrip('.!')}?"
+
+
+def _content_angle(title: str, intent: str, subreddit: str) -> str:
+    base = (title or "").strip()
+    if intent == "comparison":
+        return f"First-person comparison post for r/{subreddit}: cover trade-offs around '{base}' with concrete numbers."
+    if intent == "local":
+        return f"Locally framed answer in r/{subreddit} grounded in '{base}' — include real venue / clinician detail."
+    return f"Explainer reply in r/{subreddit} that resolves '{base}' with cited specifics, not generic advice."
+
+
+_SPAM_PATTERNS = (
+    "buy now", "click here", "discount code", "promo code",
+    "DM me", "check my profile", "link in bio",
+)
+
+
+def _risk_level(title: str, our_present: int) -> str:
+    t = (title or "").lower()
+    if int(our_present or 0) == 1:
+        # Branded mention = handle with care, ToS-sensitive
+        return "high"
+    if any(p.lower() in t for p in _SPAM_PATTERNS):
+        return "high"
+    if any(w in t for w in ("review", "scam", "lawsuit", "complaint")):
+        return "med"
+    return "low"
+
+
+def _recommended_action(intent: str, risk: str, subreddit: str) -> str:
+    if risk == "high":
+        return (
+            f"Do NOT post directly. Brief a credible community member or expert "
+            f"to engage in r/{subreddit} — disclose any affiliation."
+        )
+    if intent == "comparison":
+        return f"Draft an honest comparison answer for r/{subreddit}; cite sources, no marketing language."
+    if intent == "local":
+        return f"Reply with a locally specific, useful answer in r/{subreddit}."
+    return f"Add an explanatory comment in r/{subreddit} that genuinely helps the asker."
+
+
+async def community_opportunities(
+    workspace_id: str, limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Shape existing reddit_intel rows into community-engagement opportunities.
+
+    Never raises — a workspace with no rows returns []. Ordered by recency
+    (most recent first); upvotes are not stored in `reddit_intel` so we use
+    `observed_at` as the sole recency signal.
+    """
+    try:
+        n = max(1, min(int(limit or 50), 500))
+    except (TypeError, ValueError):
+        n = 50
+
+    try:
+        rows = await fetch_all(
+            "SELECT id, subreddit, thread_url, thread_title, discussion_type, "
+            "brands_mentioned, our_brand_mentioned, sentiment_label, "
+            "is_opportunity_gap, suggested_action, observed_at "
+            "FROM reddit_intel WHERE workspace_id = ? "
+            "ORDER BY observed_at DESC LIMIT ?",
+            (workspace_id, n),
+        ) or []
+    except Exception as e:
+        logger.warning("community_opportunities: read failed: %s", e)
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        subreddit = (r.get("subreddit") or _extract_subreddit(r.get("thread_url") or ""))
+        title = r.get("thread_title") or ""
+        disc_type = r.get("discussion_type") or ""
+        # topic: prefer discussion_type when present, else fall back to subreddit
+        topic = disc_type or (subreddit and f"r/{subreddit}") or "general"
+        intent = _infer_intent(title)
+        risk = _risk_level(title, r.get("our_brand_mentioned") or 0)
+        out.append({
+            "id": r.get("id"),
+            "subreddit": subreddit,
+            "topic": topic,
+            "user_question": title,
+            "intent": intent,
+            "suggested_content_angle": _content_angle(title, intent, subreddit),
+            "possible_faq": _question_form(title),
+            "risk_level": risk,
+            "recommended_action": r.get("suggested_action") or _recommended_action(intent, risk, subreddit),
+            "thread_url": r.get("thread_url"),
+            "sentiment": r.get("sentiment_label") or "neutral",
+            "is_opportunity_gap": bool(r.get("is_opportunity_gap")),
+            "observed_at": r.get("observed_at"),
+            "confidence": "estimated",
+        })
+    return out
+
+
+def ethical_disclaimer() -> str:
+    return "Use community insights ethically. Do not spam or manipulate communities."

@@ -183,6 +183,8 @@ async def startup():
         brand_resolver as _br, entity_graph as _eg,
         alert_engine as _ae, job_runner as _jr, scheduler as _sch,
         action_engine as _act, backtest as _bt,
+        page_prompt_mapping as _ppm, geo_brief as _gb,
+        review_intelligence as _ri, entity_consistency as _ec,
     )
     for name, mod in (
         ("brand_resolver", _br),
@@ -190,6 +192,10 @@ async def startup():
         ("alert_engine", _ae),
         ("action_engine", _act),
         ("backtest", _bt),
+        ("page_prompt_mapping", _ppm),
+        ("geo_brief", _gb),
+        ("review_intelligence", _ri),
+        ("entity_consistency", _ec),
     ):
         fn = getattr(mod, "init", None)
         if fn is None:
@@ -604,6 +610,10 @@ from . import (
     citation_breakdown,
     # Explainability layer (Phase 3)
     competitor_profile,
+    # Phase 4 — closed-loop workflow, page mapping, briefs, reports,
+    # review intelligence, entity consistency, community opportunities
+    page_prompt_mapping, geo_brief, before_after_report,
+    review_intelligence, entity_consistency,
 )
 from fastapi.responses import Response
 
@@ -1213,6 +1223,148 @@ async def competitor_profile_route(ws_id: str, domain: str):
 async def competitor_track_route(ws_id: str, domain: str):
     res = await competitor_profile.track_competitor(ws_id, domain)
     return ApiResponse(data=res).dict()
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 4 — Closed-loop workflow, page mapping, briefs, reports,
+# review intelligence, entity consistency, community opportunities
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Closed-loop action workflow ──────────────────────────────
+
+@app.get("/api/actions/{ws_id}/workflow")
+async def action_workflow_summary(ws_id: str):
+    res = await action_engine.workflow_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/actions/{ws_id}/{action_id}/before-snapshot")
+async def action_before_snapshot(ws_id: str, action_id: str):
+    res = await action_engine.take_before_snapshot(ws_id, action_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/actions/{ws_id}/{action_id}/after-snapshot")
+async def action_after_snapshot(ws_id: str, action_id: str):
+    res = await action_engine.take_after_snapshot(ws_id, action_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/actions/{ws_id}/{action_id}/schedule-retrack")
+async def action_schedule_retrack(ws_id: str, action_id: str, days: int = 7):
+    res = await action_engine.schedule_retrack(ws_id, action_id, days)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/actions/{ws_id}/run-due-retracks")
+async def action_run_due_retracks(ws_id: str):
+    res = await action_engine.run_due_retracks(workspace_id=ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Page ↔ Prompt mapping ────────────────────────────────────
+
+@app.post("/api/page-mapping/{ws_id}/map-workspace")
+async def page_mapping_map_workspace(ws_id: str):
+    res = await page_prompt_mapping.map_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.post("/api/page-mapping/{ws_id}/{prompt_id}/map")
+async def page_mapping_map_prompt(ws_id: str, prompt_id: str):
+    res = await page_prompt_mapping.map_prompt(ws_id, prompt_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/page-mapping/{ws_id}")
+async def page_mapping_list(ws_id: str, only_missing: bool = False):
+    rows = await page_prompt_mapping.list_mappings(ws_id, only_missing)
+    return ApiResponse(data=rows, meta={"count": len(rows or [])}).dict()
+
+
+# ─── GEO Brief ────────────────────────────────────────────────
+
+@app.post("/api/briefs/{ws_id}/{prompt_id}/generate")
+async def briefs_generate(ws_id: str, prompt_id: str, push: bool = False):
+    res = await geo_brief.generate_brief(ws_id, prompt_id, push)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/briefs/{ws_id}")
+async def briefs_list(ws_id: str):
+    rows = await geo_brief.list_briefs(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows or [])}).dict()
+
+
+@app.post("/api/briefs/{brief_id}/push-to-actions")
+async def briefs_push_to_actions(brief_id: str):
+    res = await geo_brief.push_brief_to_actions(brief_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Before/After reports ─────────────────────────────────────
+
+@app.get("/api/reports/{ws_id}/workspace")
+async def reports_workspace_json(ws_id: str, days: int = 30):
+    res = await before_after_report.workspace_report(ws_id, days)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/reports/{ws_id}/workspace.html")
+async def reports_workspace_html(ws_id: str, days: int = 30):
+    html = await before_after_report.html_report(ws_id, days)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/reports/action/{action_id}")
+async def reports_action(action_id: str):
+    res = await before_after_report.action_report(action_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Review Intelligence ──────────────────────────────────────
+
+@app.post("/api/reviews/{ws_id}/signal")
+async def reviews_record_signal(ws_id: str, payload: Dict[str, Any]):
+    body = payload or {}
+    brand = body.get("brand", "")
+    platform = body.get("platform", "")
+    extras = {k: v for k, v in body.items() if k not in ("brand", "platform")}
+    res = await review_intelligence.record_signal(
+        ws_id, brand=brand, platform=platform, **extras,
+    )
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/reviews/{ws_id}/summary")
+async def reviews_summary(ws_id: str):
+    res = await review_intelligence.workspace_review_summary(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+# ─── Entity Consistency ───────────────────────────────────────
+
+@app.post("/api/entity-consistency/{ws_id}/check")
+async def entity_consistency_check(ws_id: str):
+    res = await entity_consistency.check_workspace(ws_id)
+    return ApiResponse(data=res).dict()
+
+
+@app.get("/api/entity-consistency/{ws_id}/recent")
+async def entity_consistency_recent(ws_id: str):
+    rows = await entity_consistency.list_recent(ws_id)
+    return ApiResponse(data=rows, meta={"count": len(rows or [])}).dict()
+
+
+# ─── Community (Reddit) opportunities ─────────────────────────
+
+@app.get("/api/community/{ws_id}/opportunities")
+async def community_opportunities(ws_id: str):
+    rows = await reddit_engine.community_opportunities(ws_id)
+    return ApiResponse(data={
+        "opportunities": rows,
+        "disclaimer": reddit_engine.ethical_disclaimer(),
+    }, meta={"count": len(rows or [])}).dict()
 
 
 # ─── Alerts ──────────────────────────────────────────────────
