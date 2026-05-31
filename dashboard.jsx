@@ -243,6 +243,7 @@ const NAV_ITEMS = [
     { id: 'journey', label: 'Buyer Journey', icon: '\u27ff' },
     { id: 'aio', label: 'AI Overview', icon: '\u25C9' },
     { id: 'competitors', label: 'Competitors', icon: '\u2691' },
+    { id: 'competitor_profiles', label: 'Competitor Profiles', icon: '\u2609' },
   ]},
   { section: 'Execute', items: [
     { id: 'actions', label: 'Action Engine', icon: '\u2699' },
@@ -1295,6 +1296,234 @@ function TrackingLogPanel({ wsId, onRefresh }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COMPARATIVE DIAGNOSIS MODAL (Phase 3)
+// ═══════════════════════════════════════════════════════════════
+
+function _relTime(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return `${Math.round(diff)}s ago`;
+    if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
+    if (diff < 86400 * 30) return `${Math.round(diff / 86400)}d ago`;
+    return d.toLocaleDateString();
+  } catch { return String(ts); }
+}
+
+function ComparativeDiagnosisModal({ wsId, promptId, preloaded, onClose, onPushedToActions, competitorDomain, manualCompetitorUrl, ourUrl }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(preloaded || null);
+  const [error, setError] = useState('');
+  const [pushing, setPushing] = useState(false);
+  const [pushMsg, setPushMsg] = useState('');
+  const loading = !data && !error;
+
+  useEffect(() => {
+    if (preloaded || !wsId || !promptId) return;
+    let cancelled = false;
+    const body = {};
+    if (competitorDomain) body.competitor_domain = competitorDomain;
+    if (manualCompetitorUrl) body.manual_competitor_url = manualCompetitorUrl;
+    if (ourUrl) body.our_url = ourUrl;
+    api(`/api/intel/${wsId}/compare/${promptId}`, {
+      method: 'POST',
+      body: Object.keys(body).length ? JSON.stringify(body) : JSON.stringify({}),
+    }, token)
+      .then(r => { if (!cancelled) setData(r.data || r); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load'); });
+    return () => { cancelled = true; };
+  }, [wsId, promptId, preloaded, competitorDomain, manualCompetitorUrl, ourUrl, token]);
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose && onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const pushToActions = async () => {
+    if (!data?.diagnosis_id) return;
+    setPushing(true); setPushMsg('');
+    try {
+      const r = await api(`/api/intel/diagnosis/${data.diagnosis_id}/push-actions`, { method: 'POST' }, token);
+      const d = r.data || r;
+      const n = d.created ?? (d.action_ids || []).length ?? 0;
+      setPushMsg(`${n} actions queued ✓`);
+      if (onPushedToActions) onPushedToActions(d);
+    } catch (e) {
+      setPushMsg('Push failed: ' + (e.message || 'unknown'));
+    }
+    setPushing(false);
+  };
+
+  const stageColor = { decision: 'rose', trust: 'amber', comparison: 'purple', objection: 'blue', solution: 'emerald', problem: 'blue', awareness: 'gray' };
+  const diffColors = { easy: 'var(--emerald)', medium: 'var(--amber)', hard: 'var(--rose)' };
+
+  const GAP_FIELDS = [
+    { key: 'content_gap', label: 'Content' },
+    { key: 'schema_gap', label: 'Schema' },
+    { key: 'trust_gap', label: 'Trust' },
+    { key: 'offsite_gap', label: 'Offsite' },
+    { key: 'citation_gap', label: 'Citation' },
+    { key: 'decision_support_gap', label: 'Decision support' },
+  ];
+
+  const linkify = url => {
+    if (!url) return null;
+    let href = String(url);
+    if (!/^https?:\/\//i.test(href)) href = 'https://' + href;
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer"
+         style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all' }}>
+        {String(url).slice(0, 90)}
+      </a>
+    );
+  };
+
+  const gaps = data?.gaps || {};
+  const whatLack = gaps.what_they_have_we_lack;
+  const lackList = Array.isArray(whatLack)
+    ? whatLack
+    : (typeof whatLack === 'string' && whatLack.trim()
+        ? whatLack.split(/[\r\n;•·]+|(?:^|\s)-\s+/).map(s => s.trim()).filter(Boolean)
+        : []);
+
+  const diff = String(data?.implementation_difficulty || '').toLowerCase();
+  const diffColor = diffColors[diff] || 'var(--text-muted)';
+
+  return (
+    <div className="modal-overlay" onClick={() => onClose && onClose()}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '92vw' }}>
+        <div className="modal-header">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <h3 style={{ marginBottom: 0 }}>Comparative Citation Diagnosis</h3>
+            {data && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 600 }}>{data.prompt_text || ''}</span>
+                {data.buyer_stage && <span className={`badge ${stageColor[data.buyer_stage] || 'gray'}`}>{data.buyer_stage}</span>}
+                <ConfidenceBadge level={data.confidence || 'estimated'} />
+              </div>
+            )}
+          </div>
+          <button className="modal-close" onClick={() => onClose && onClose()}>{'×'}</button>
+        </div>
+        <div className="modal-body">
+          {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading comparative diagnosis…</div>}
+          {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+          {!loading && !error && !data && (
+            <div className="empty-state">◎<br/>No diagnosis available.</div>
+          )}
+          {data && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              {/* Two-column: competitor vs us */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="card" style={{ padding: 10 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Competitor (winning)</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <span className="badge rose">{data.winning_competitor || '—'}</span>
+                  </div>
+                  {linkify(data.competitor_url) || <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>}
+                </div>
+                <div className="card" style={{ padding: 10 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Us (best matching)</div>
+                  {data.our_url
+                    ? linkify(data.our_url)
+                    : <span className="badge rose">Missing page</span>}
+                </div>
+              </div>
+
+              {/* Gaps grid */}
+              <div className="card" style={{ padding: 10 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Gaps</div>
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {GAP_FIELDS.map(f => {
+                    const v = gaps[f.key];
+                    const has = typeof v === 'string' ? v.trim().length > 0 : !!v;
+                    const color = has ? 'var(--rose)' : 'var(--text-muted)';
+                    return (
+                      <div key={f.key} style={{ display: 'grid', gridTemplateColumns: '140px 10px 1fr', gap: 8, alignItems: 'baseline', padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>{f.label}</span>
+                        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: color }}></span>
+                        <span style={{ fontSize: 12, color: has ? 'var(--text-primary)' : 'var(--text-muted)', lineHeight: 1.45 }}>
+                          {has ? (typeof v === 'string' ? v : JSON.stringify(v)) : 'No material gap detected'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Why they win */}
+              {gaps.why_they_win && (
+                <div style={{ borderLeft: '2px solid var(--purple)', paddingLeft: 10 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Why they win</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic', lineHeight: 1.55 }}>{gaps.why_they_win}</div>
+                </div>
+              )}
+
+              {/* What they have we lack */}
+              {lackList.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>What they have we lack</div>
+                  <ul style={{ fontSize: 12, paddingLeft: 18, color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                    {lackList.map((it, i) => <li key={i} style={{ marginBottom: 3 }}>{it}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {/* Footer panel */}
+              <div className="card" style={{ padding: 12, background: 'var(--bg-raised)' }}>
+                {data.recommended_action && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Recommended action</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.5 }}>{data.recommended_action}</div>
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 11 }}>
+                  {data.expected_impact && (
+                    <div>
+                      <span style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>Expected impact: </span>
+                      <span style={{ color: 'var(--emerald)' }}>{data.expected_impact}</span>
+                    </div>
+                  )}
+                  {data.implementation_difficulty && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <span style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>Difficulty</span>
+                      <span style={{
+                        display: 'inline-block', padding: '1px 7px', borderRadius: 9,
+                        fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+                        color: diffColor, background: `${diffColor}22`,
+                      }}>{diff}</span>
+                    </div>
+                  )}
+                  {data.source_label && <span className="badge">{data.source_label}</span>}
+                  {data.last_analyzed && (
+                    <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      {_relTime(data.last_analyzed)}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Push button */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+                {pushMsg && (
+                  <span style={{ fontSize: 11, color: pushMsg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{pushMsg}</span>
+                )}
+                <button className="btn btn-primary" onClick={pushToActions} disabled={pushing || !data.diagnosis_id}>
+                  {pushing ? 'Pushing…' : 'Push to Action Engine'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3023,6 +3252,227 @@ function CompetitorsPage({ state, dispatch }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COMPETITOR PROFILES PAGE (Phase 3)
+// ═══════════════════════════════════════════════════════════════
+
+function CompetitorProfilesPage({ state, dispatch }) {
+  const { token } = useContext(AuthContext);
+  const wsId = state.activeWorkspace?.id;
+  const [profiles, setProfiles] = useState([]);
+  const [newDomain, setNewDomain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [refreshingDomain, setRefreshingDomain] = useState(null);
+
+  const load = () => {
+    if (!wsId) return;
+    setLoading(true);
+    api(`/api/competitors/${wsId}/tracked`, {}, token)
+      .then(r => setProfiles(r.data || r || []))
+      .catch(e => setMsg('Load failed: ' + e.message))
+      .finally(() => setLoading(false));
+  };
+  useEffect(load, [wsId]);
+
+  const trackNew = async () => {
+    const d = newDomain.trim();
+    if (!d) return;
+    setBusy(true); setMsg('');
+    try {
+      await api(`/api/competitors/${wsId}/${encodeURIComponent(d)}/track`, { method: 'POST' }, token);
+      setNewDomain('');
+      setMsg(`Tracking ${d} ✓`);
+      load();
+    } catch (e) { setMsg('Track failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const refreshProfile = async (d) => {
+    setRefreshingDomain(d); setMsg('');
+    try {
+      const r = await api(`/api/competitors/${wsId}/${encodeURIComponent(d)}/profile`, {}, token);
+      const next = r.data || r;
+      setProfiles(ps => ps.map(p => (p.domain === d ? { ...p, ...next } : p)));
+    } catch (e) { setMsg('Refresh failed: ' + e.message); }
+    setRefreshingDomain(null);
+  };
+
+  const pushAttack = async (d) => {
+    setMsg('');
+    try {
+      const r = await api(`/api/attack-map/${wsId}/${encodeURIComponent(d)}/push-actions`, { method: 'POST' }, token);
+      const dd = r.data || r;
+      const n = dd.created ?? (dd.action_ids || []).length ?? 0;
+      setMsg(`${n} attack actions queued for ${d} ✓`);
+    } catch (e) { setMsg('Push failed: ' + e.message); }
+  };
+
+  const eur = v => `€${Math.round(Number(v) || 0).toLocaleString()}`;
+  const stageColor = { decision: 'rose', trust: 'amber', comparison: 'purple', objection: 'blue', solution: 'emerald', problem: 'blue', awareness: 'gray' };
+
+  const movementChip = (m) => {
+    const v = Number(m);
+    if (!m && m !== 0) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+    const isNum = !isNaN(v);
+    const up = isNum ? v > 0 : /up|gain|rise|\+/i.test(String(m));
+    const down = isNum ? v < 0 : /down|loss|drop|-/i.test(String(m));
+    const arrow = up ? '↑' : down ? '↓' : '→';
+    const color = up ? 'var(--rose)' : down ? 'var(--emerald)' : 'var(--text-muted)';
+    const label = isNum ? `${arrow} ${v > 0 ? '+' : ''}${v}` : `${arrow} ${m}`;
+    return (
+      <span style={{
+        display: 'inline-block', padding: '1px 7px', borderRadius: 9,
+        fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+        color, background: `${color}22`, whiteSpace: 'nowrap',
+      }}>{label}</span>
+    );
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <div className="card">
+        <div className="card-header">Competitor Profiles — full intelligence</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Track competitors to capture prompts-won, € revenue captured, strongest stage/topic, weakest factor, citation sources, and a suggested attack.
+        </p>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <input className="form-input" placeholder="Track new competitor (e.g. medicover.hu)"
+            value={newDomain} onChange={e => setNewDomain(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') trackNew(); }}
+            style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={trackNew} disabled={busy || !newDomain.trim()}>
+            {busy ? 'Tracking…' : 'Track competitor'}
+          </button>
+          <button className="btn" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: msg.toLowerCase().includes('failed') ? 'var(--rose)' : 'var(--emerald)', marginTop: 6 }}>{msg}</div>}
+      </div>
+
+      {profiles.length === 0 ? (
+        <div className="empty-state">
+          ☉<br/>
+          No competitors tracked yet. Click "Track Competitor" on the Attack Map page to add one.
+          <div style={{ marginTop: 12 }}>
+            <button className="btn btn-sm btn-primary" onClick={() => dispatch && dispatch({ type: 'SET_VIEW', view: 'attack_map' })}>
+              Go to Attack Map
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))', gap: 16 }}>
+          {profiles.map(p => {
+            const promptsWon = Number(p.prompts_won || 0);
+            const hvWon = Number(p.high_value_prompts_won || 0);
+            const avgPos = p.avg_position != null
+              ? Number(p.avg_position).toFixed(1)
+              : (p.average_position != null ? Number(p.average_position).toFixed(1) : '—');
+            return (
+              <div className="card" key={p.domain}>
+                <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--blue)' }}>{p.domain}</span>
+                    <span className="badge emerald">tracked</span>
+                    <ConfidenceBadge level={p.confidence || 'estimated'} />
+                  </div>
+                  <button className="btn btn-sm" onClick={() => refreshProfile(p.domain)} disabled={refreshingDomain === p.domain}>
+                    {refreshingDomain === p.domain ? '…' : 'Refresh'}
+                  </button>
+                </div>
+
+                {/* 6-stat strip */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 10 }}>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">PROMPTS WON</div>
+                    <div className="metric-value" style={{ fontSize: 20 }}>{promptsWon}</div>
+                  </div>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">HIGH-VALUE WON</div>
+                    <div className="metric-value" style={{ fontSize: 20, color: 'var(--rose)' }}>{hvWon}</div>
+                  </div>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">€ REVENUE CAPTURED</div>
+                    <div className="metric-value" style={{ fontSize: 18, color: 'var(--amber)' }}>{eur(p.est_revenue_captured)}</div>
+                  </div>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">AVG POSITION</div>
+                    <div className="metric-value" style={{ fontSize: 20 }}>{avgPos}</div>
+                  </div>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">STRONGEST STAGE</div>
+                    <div style={{ marginTop: 4 }}>
+                      {p.strongest_stage
+                        ? <span className={`badge ${stageColor[p.strongest_stage] || 'gray'}`}>{p.strongest_stage}</span>
+                        : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                    </div>
+                  </div>
+                  <div className="metric-card" style={{ padding: 8 }}>
+                    <div className="metric-label">STRONGEST TOPIC</div>
+                    <div style={{ marginTop: 4, fontSize: 12, fontWeight: 600, color: 'var(--cyan)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                         title={p.strongest_topic || ''}>
+                      {p.strongest_topic || '—'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Weakest + movement */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Weakest factor:</span>
+                  {p.weakest_factor
+                    ? <span className="badge rose">{p.weakest_factor}</span>
+                    : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginLeft: 8 }}>30d movement:</span>
+                  {movementChip(p.recent_30d_movement)}
+                </div>
+
+                {/* Citation sources */}
+                {(p.citation_sources || []).length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Citation sources (top 5)</div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {p.citation_sources.slice(0, 5).map((s, i) => (
+                        <span key={i} className="badge">
+                          {typeof s === 'string' ? s : (s.source || s.name || s.domain || '?')}
+                          {s && typeof s === 'object' && s.count != null ? ` · ${s.count}` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggested attack */}
+                {p.suggested_attack && (
+                  <div style={{ borderLeft: '2px solid var(--emerald)', paddingLeft: 10, marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Suggested attack</div>
+                    <div style={{ fontSize: 12, fontStyle: 'italic', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                      {p.suggested_attack}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: 8, gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    {p.last_analyzed ? `Updated ${_relTime(p.last_analyzed)}` : ''}
+                  </span>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <button className="btn btn-sm" onClick={() => dispatch && dispatch({ type: 'SET_VIEW', view: 'attack_map' })}>
+                      View Attack Map row
+                    </button>
+                    <button className="btn btn-sm btn-primary" onClick={() => pushAttack(p.domain)}>
+                      Push Attack to Action Engine
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -4774,6 +5224,7 @@ function PromptBattlefieldPage({ state }) {
   const [emergingMap, setEmergingMap] = useState({}); // prompt_id -> { subtype, why }
   const [trackingSource, setTrackingSource] = useState(null); // latest data_source
   const [emergingHover, setEmergingHover] = useState(null); // prompt_id of hovered row
+  const [comparePromptId, setComparePromptId] = useState(null);
 
   const load = () => {
     if (!wsId) return;
@@ -4906,7 +5357,7 @@ function PromptBattlefieldPage({ state }) {
               <th>Prompt</th><th>Type</th><th>Stage</th>
               <th>Revenue <MetricTooltip metricKey="prompt_revenue" /></th>
               <th>Ownership <MetricTooltip metricKey="prompt_ownership_level" /></th>
-              <th>Source</th><th>Confidence</th><th>Status</th>
+              <th>Source</th><th>Confidence</th><th>Status</th><th>Action</th>
             </tr></thead><tbody>{prompts.slice(0, 200).map(p => {
               const em = emergingMap[p.id];
               return (
@@ -4944,6 +5395,7 @@ function PromptBattlefieldPage({ state }) {
                   <td>{p.source || '—'}</td>
                   <td><ConfidenceBadge level={p.confidence || 'estimated'} /></td>
                   <td><span className="badge">{p.status}</span></td>
+                  <td><button className="btn btn-sm" onClick={() => setComparePromptId(p.id)} title="Compare vs winning competitor">Compare</button></td>
                 </tr>
               );
             })}</tbody></table>
@@ -4955,6 +5407,14 @@ function PromptBattlefieldPage({ state }) {
           <TrackingLogPanel wsId={wsId} onRefresh={load} />
         </div>
       </div>
+      {comparePromptId && (
+        <ComparativeDiagnosisModal
+          wsId={wsId}
+          promptId={comparePromptId}
+          onClose={() => setComparePromptId(null)}
+          onPushedToActions={() => { /* keep modal open with msg */ }}
+        />
+      )}
     </div>
   );
 }
@@ -4970,13 +5430,70 @@ function CitationIntelPage({ state }) {
   const [selPrompt, setSelPrompt] = useState('');
   const [competitor, setCompetitor] = useState('');
   const [manualUrl, setManualUrl] = useState('');
+  const [cmpPromptId, setCmpPromptId] = useState(null);
+  const [cmpCompetitor, setCmpCompetitor] = useState('');
+  const [cmpManualUrl, setCmpManualUrl] = useState('');
+  const [cmpSelect, setCmpSelect] = useState('');
+  const [cmpPasteId, setCmpPasteId] = useState('');
+  const [cmpPreloaded, setCmpPreloaded] = useState(null);
+  const [cmpBusy, setCmpBusy] = useState(false);
+  const [recentDiagnoses, setRecentDiagnoses] = useState([]);
 
   const load = () => {
     if (!wsId) return;
-    api(`/api/intel/diagnostics/${wsId}`, {}, token).then(r => setDiags(r.data || [])).catch(() => {});
+    api(`/api/intel/diagnostics/${wsId}`, {}, token).then(r => {
+      const list = r.data || r || [];
+      setDiags(list);
+      setRecentDiagnoses(list);
+    }).catch(() => {});
     api(`/api/prompts/${wsId}?min_revenue=40&limit=200`, {}, token).then(r => setPrompts(r.data || [])).catch(() => {});
   };
   useEffect(load, [wsId]);
+
+  const runComparative = async () => {
+    const pid = (cmpSelect || cmpPasteId || '').trim();
+    if (!pid) { setMsg('Pick a prompt or paste a prompt ID first.'); return; }
+    setCmpBusy(true); setMsg('');
+    try {
+      const body = {};
+      if (cmpCompetitor.trim()) body.competitor_domain = cmpCompetitor.trim();
+      if (cmpManualUrl.trim()) body.manual_competitor_url = cmpManualUrl.trim();
+      const r = await api(`/api/intel/${wsId}/compare/${pid}`, {
+        method: 'POST', body: JSON.stringify(body),
+      }, token);
+      const d = r.data || r;
+      setCmpPreloaded(d);
+      setCmpPromptId(pid);
+    } catch (e) { setMsg('Comparative failed: ' + e.message); }
+    setCmpBusy(false);
+  };
+
+  const openExistingDiagnosis = (d) => {
+    // Map persisted diagnostic row -> ComparativeDiagnosisModal data shape (best-effort).
+    const preloaded = {
+      prompt_id: d.prompt_id || null,
+      prompt_text: d.prompt_text || d.prompt || '',
+      buyer_stage: d.buyer_stage || '',
+      winning_competitor: d.competitor_domain || d.winning_competitor || '',
+      competitor_url: d.analyzed_url || d.competitor_url || '',
+      our_url: d.our_url || '',
+      gaps: d.gaps || {
+        why_they_win: d.diagnosis || '',
+        what_they_have_we_lack: d.actions || [],
+        content_gap: '', schema_gap: '', trust_gap: '',
+        offsite_gap: '', citation_gap: '', decision_support_gap: '',
+      },
+      recommended_action: d.recommended_action || '',
+      expected_impact: d.expected_impact || '',
+      implementation_difficulty: d.implementation_difficulty || '',
+      confidence: d.confidence || 'estimated',
+      source_label: d.source_label || d.data_source || '',
+      diagnosis_id: d.id || d.diagnosis_id,
+      last_analyzed: d.analyzed_at || d.last_analyzed || null,
+    };
+    setCmpPreloaded(preloaded);
+    setCmpPromptId(preloaded.prompt_id || d.id || 'existing');
+  };
 
   const runWorkspace = async () => {
     setBusy(true); setMsg('');
@@ -5006,7 +5523,7 @@ function CitationIntelPage({ state }) {
       <CitationBreakdownCard wsId={wsId} />
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Citation Intelligence — why are we losing</span>
+          <span>Citation Intelligence — why are we losing <MetricTooltip metricKey="citation_quality" /></span>
           <button className="btn btn-sm btn-primary" onClick={runWorkspace} disabled={busy}>{busy ? 'Diagnosing...' : 'Diagnose Top 8 Losses'}</button>
         </div>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -5023,6 +5540,53 @@ function CitationIntelPage({ state }) {
         </div>
         {msg && <div style={{ fontSize: 11, color: msg.includes('Failed') ? 'var(--rose)' : 'var(--emerald)', marginTop: 6 }}>{msg}</div>}
       </div>
+
+      {/* Phase 3: Comparative diagnosis (side-by-side) */}
+      <div className="card">
+        <div className="card-header">Diagnose this prompt vs winning competitor</div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Side-by-side competitor vs us — content, schema, trust, offsite, citation, decision support. Pushes prioritized actions to the Action Engine.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 6, marginTop: 8 }}>
+          <select className="form-input" value={cmpSelect} onChange={e => { setCmpSelect(e.target.value); if (e.target.value) setCmpPasteId(''); }}>
+            <option value="">— pick a prompt —</option>
+            {prompts.map(p => <option key={p.id} value={p.id}>{p.text.slice(0, 80)}</option>)}
+          </select>
+          <input className="form-input" placeholder="…or paste prompt ID" value={cmpPasteId} onChange={e => { setCmpPasteId(e.target.value); if (e.target.value) setCmpSelect(''); }} />
+          <input className="form-input" placeholder="competitor domain (optional)" value={cmpCompetitor} onChange={e => setCmpCompetitor(e.target.value)} />
+          <input className="form-input" placeholder="manual competitor URL (optional)" value={cmpManualUrl} onChange={e => setCmpManualUrl(e.target.value)} />
+          <button className="btn btn-primary" onClick={runComparative} disabled={cmpBusy}>{cmpBusy ? 'Running…' : 'Run comparative'}</button>
+        </div>
+      </div>
+
+      {/* Phase 3: Recent diagnoses table */}
+      {recentDiagnoses.length > 0 && (
+        <div className="card">
+          <div className="card-header">Recent comparative diagnoses</div>
+          <table className="data-table">
+            <thead><tr>
+              <th>Prompt</th><th>Competitor</th><th>Recommended action</th><th>Confidence</th><th></th>
+            </tr></thead>
+            <tbody>
+              {recentDiagnoses.slice(0, 20).map(d => (
+                <tr key={d.id}>
+                  <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={d.prompt_text || d.prompt || ''}>
+                    {(d.prompt_text || d.prompt || '—').slice(0, 80)}
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)', color: 'var(--blue)' }}>{d.competitor_domain || '—'}</td>
+                  <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={d.recommended_action || d.diagnosis || ''}>
+                    {(d.recommended_action || d.diagnosis || '—').slice(0, 90)}
+                  </td>
+                  <td><ConfidenceBadge level={d.confidence || 'estimated'} /></td>
+                  <td><button className="btn btn-sm" onClick={() => openExistingDiagnosis(d)}>Open</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {diags.length === 0 ? (
         <div className="empty-state">◎<br/>No diagnostics yet. Run the diagnosis above.</div>
       ) : diags.map(d => (
@@ -5057,6 +5621,15 @@ function CitationIntelPage({ state }) {
           } catch { return null; }})()}
         </div>
       ))}
+      {cmpPromptId && (
+        <ComparativeDiagnosisModal
+          wsId={wsId}
+          promptId={cmpPromptId}
+          preloaded={cmpPreloaded}
+          onClose={() => { setCmpPromptId(null); setCmpPreloaded(null); }}
+          onPushedToActions={() => load()}
+        />
+      )}
     </div>
   );
 }
@@ -5069,13 +5642,29 @@ function AttackMapPage({ state }) {
   const [movements, setMovements] = useState([]);
   const [domain, setDomain] = useState('');
   const [busy, setBusy] = useState(false);
+  const [trackedSet, setTrackedSet] = useState({});
+  const [rowBusy, setRowBusy] = useState({}); // domain -> 'analyze' | 'track' | 'push'
+  const [toast, setToast] = useState('');
 
   const load = () => {
     if (!wsId) return;
     api(`/api/attack-map/${wsId}`, {}, token).then(r => setRows(r.data || [])).catch(() => {});
     api(`/api/attack-map/${wsId}/movements?days=14`, {}, token).then(r => setMovements(r.data || [])).catch(() => {});
+    api(`/api/competitors/${wsId}/tracked`, {}, token)
+      .then(r => {
+        const list = r.data || r || [];
+        const m = {};
+        list.forEach(p => { if (p?.domain) m[p.domain] = true; });
+        setTrackedSet(m);
+      })
+      .catch(() => {});
   };
   useEffect(load, [wsId]);
+
+  const flashToast = (txt) => {
+    setToast(txt);
+    setTimeout(() => setToast(''), 4000);
+  };
 
   const analyze = async () => {
     if (!domain.trim()) return;
@@ -5083,7 +5672,7 @@ function AttackMapPage({ state }) {
     try {
       await api(`/api/attack-map/${wsId}/analyze`, { method: 'POST', body: JSON.stringify({ competitor_domain: domain }) }, token);
       setDomain(''); load();
-    } catch (e) { /* surface inline */ }
+    } catch (e) { flashToast('Analyze failed: ' + e.message); }
     setBusy(false);
   };
 
@@ -5092,16 +5681,57 @@ function AttackMapPage({ state }) {
     try {
       await api(`/api/attack-map/${wsId}/analyze-all-known?max_competitors=12`, { method: 'POST' }, token);
       load();
-    } catch (e) { /* surface inline */ }
+    } catch (e) { flashToast('Analyze all failed: ' + e.message); }
     setBusy(false);
+  };
+
+  const analyzeRow = async (d) => {
+    setRowBusy(s => ({ ...s, [d]: 'analyze' }));
+    try {
+      await api(`/api/attack-map/${wsId}/analyze`, { method: 'POST', body: JSON.stringify({ competitor_domain: d }) }, token);
+      flashToast(`Analyzed ${d}`); load();
+    } catch (e) { flashToast('Analyze failed: ' + e.message); }
+    setRowBusy(s => ({ ...s, [d]: null }));
+  };
+
+  const trackRow = async (d) => {
+    setRowBusy(s => ({ ...s, [d]: 'track' }));
+    try {
+      await api(`/api/competitors/${wsId}/${encodeURIComponent(d)}/track`, { method: 'POST' }, token);
+      setTrackedSet(s => ({ ...s, [d]: true }));
+      flashToast(`Tracking ${d} ✓`);
+    } catch (e) { flashToast('Track failed: ' + e.message); }
+    setRowBusy(s => ({ ...s, [d]: null }));
+  };
+
+  const pushAttackRow = async (d) => {
+    setRowBusy(s => ({ ...s, [d]: 'push' }));
+    try {
+      const r = await api(`/api/attack-map/${wsId}/${encodeURIComponent(d)}/push-actions`, { method: 'POST' }, token);
+      const dd = r.data || r;
+      const n = dd.created ?? (dd.action_ids || []).length ?? 0;
+      flashToast(`${n} attack actions queued for ${d} ✓`);
+    } catch (e) { flashToast('Push failed: ' + e.message); }
+    setRowBusy(s => ({ ...s, [d]: null }));
   };
 
   const AXES = ['schema','reddit','youtube','faq_depth','decision_support','review','entity_consistency','pr','local_authority'];
 
+  const effortColors = { easy: 'var(--emerald)', medium: 'var(--amber)', hard: 'var(--rose)', low: 'var(--emerald)', high: 'var(--rose)' };
+  const impactColors = { high: 'var(--emerald)', medium: 'var(--amber)', low: 'var(--text-muted)' };
+
+  const truncate = (s, n) => {
+    if (!s) return '';
+    return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  };
+
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
       <div className="card">
-        <div className="card-header">GEO Attack Map — find the open flank</div>
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span>GEO Attack Map — find the open flank</span>
+          <MetricTooltip metricKey="dominator" />
+        </div>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           After your Peec CSV import, every competitor brand mentioned in your prompts gets a seeded
           capability row. Click <b>Analyze All Known</b> to refine them with page scrapes + Claude diagnosis,
@@ -5112,6 +5742,7 @@ function AttackMapPage({ state }) {
           <button className="btn btn-primary" onClick={analyze} disabled={busy}>{busy ? 'Analyzing...' : 'Analyze Competitor'}</button>
           <button className="btn" onClick={analyzeAll} disabled={busy}>Analyze All Known</button>
         </div>
+        {toast && <div style={{ fontSize: 11, color: toast.includes('failed') ? 'var(--rose)' : 'var(--emerald)', marginTop: 4 }}>{toast}</div>}
       </div>
 
       {rows.length > 0 && (
@@ -5120,19 +5751,66 @@ function AttackMapPage({ state }) {
           <div style={{ overflowX: 'auto' }}>
             <table className="data-table">
               <thead><tr>
-                <th>Competitor</th>{AXES.map(a => <th key={a} style={{ fontSize: 10 }}>{a}</th>)}<th>Overall</th><th>Weakest</th>
+                <th>Competitor</th>
+                {AXES.map(a => <th key={a} style={{ fontSize: 10 }}>{a}</th>)}
+                <th>Overall</th><th>Weakest</th>
+                <th>Conf</th><th>Open flank</th><th>Recommended attack</th>
+                <th>Effort</th><th>Impact</th><th>Last analyzed</th>
+                <th>Actions</th>
               </tr></thead>
-              <tbody>{rows.map(r => (
-                <tr key={r.competitor_domain}>
-                  <td style={{ fontWeight: 600 }}>{r.competitor_domain}</td>
-                  {AXES.map(a => {
-                    const v = r[`${a}_score`] || 0;
-                    return <td key={a} style={{ background: `linear-gradient(90deg, rgba(${v >= 60 ? '244,63,94' : v >= 30 ? '245,158,11' : '16,185,129'},0.2) ${v}%, transparent ${v}%)`, fontWeight: 600 }}>{Math.round(v)}</td>;
-                  })}
-                  <td style={{ fontWeight: 700 }}>{Math.round(r.overall_strength || 0)}</td>
-                  <td><span className="badge emerald">{r.weakest_axis} ({Math.round(r.weakest_axis_score || 0)})</span></td>
-                </tr>
-              ))}</tbody>
+              <tbody>{rows.map(r => {
+                const d = r.competitor_domain;
+                const rb = rowBusy[d];
+                const isTracked = !!trackedSet[d];
+                const eff = String(r.effort || '').toLowerCase();
+                const imp = String(r.potential_impact || '').toLowerCase();
+                const effColor = effortColors[eff] || 'var(--text-muted)';
+                const impColor = impactColors[imp] || 'var(--text-muted)';
+                return (
+                  <tr key={d}>
+                    <td style={{ fontWeight: 600 }}>{d}</td>
+                    {AXES.map(a => {
+                      const v = r[`${a}_score`] || 0;
+                      return <td key={a} style={{ background: `linear-gradient(90deg, rgba(${v >= 60 ? '244,63,94' : v >= 30 ? '245,158,11' : '16,185,129'},0.2) ${v}%, transparent ${v}%)`, fontWeight: 600 }}>{Math.round(v)}</td>;
+                    })}
+                    <td style={{ fontWeight: 700 }}>{Math.round(r.overall_strength || 0)}</td>
+                    <td><span className="badge emerald">{r.weakest_axis} ({Math.round(r.weakest_axis_score || 0)})</span></td>
+                    <td><ConfidenceBadge level={r.confidence || 'estimated'} /></td>
+                    <td title={r.open_flank || ''} style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+                      {truncate(r.open_flank || '—', 28)}
+                    </td>
+                    <td title={r.recommended_attack || ''} style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+                      {truncate(r.recommended_attack || '—', 36)}
+                    </td>
+                    <td>{eff ? <span style={{
+                      display: 'inline-block', padding: '1px 7px', borderRadius: 9,
+                      fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+                      color: effColor, background: `${effColor}22`,
+                    }}>{eff}</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                    <td>{imp ? <span style={{
+                      display: 'inline-block', padding: '1px 7px', borderRadius: 9,
+                      fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+                      color: impColor, background: `${impColor}22`,
+                    }}>{imp}</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                      {_relTime(r.last_analyzed_at)}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        <button className="btn btn-sm" disabled={!!rb} onClick={() => analyzeRow(d)}>
+                          {rb === 'analyze' ? '…' : 'Analyze'}
+                        </button>
+                        <button className="btn btn-sm" disabled={!!rb || isTracked} onClick={() => trackRow(d)}>
+                          {rb === 'track' ? '…' : (isTracked ? 'Tracked ✓' : 'Track')}
+                        </button>
+                        <button className="btn btn-sm btn-primary" disabled={!!rb} onClick={() => pushAttackRow(d)}>
+                          {rb === 'push' ? '…' : 'Push attack to Actions'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
             </table>
           </div>
         </div>
@@ -6069,13 +6747,16 @@ function AuthorityGraphPage({ state }) {
   const wsId = state.activeWorkspace?.id;
   const [summary, setSummary] = useState(null);
   const [graph, setGraph] = useState(null);
+  const [insight, setInsight] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [relabeling, setRelabeling] = useState(false);
   const [msg, setMsg] = useState('');
 
   const load = () => {
     if (!wsId) return;
     api(`/api/graph/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => {});
     api(`/api/graph/${wsId}/json?top_n_nodes=80`, {}, token).then(r => setGraph(r.data || r)).catch(() => {});
+    api(`/api/graph/${wsId}/insight`, {}, token).then(r => setInsight(r.data || r)).catch(() => {});
   };
   useEffect(load, [wsId]);
 
@@ -6086,6 +6767,17 @@ function AuthorityGraphPage({ state }) {
     setBusy(false);
   };
 
+  const relabelTopics = async () => {
+    setRelabeling(true); setMsg('');
+    try {
+      const r = await api(`/api/graph/${wsId}/relabel-topics`, { method: 'POST' }, token);
+      const d = r.data || r;
+      setMsg(`${d.relabeled || 0} topics relabeled, ${d.skipped_manual || 0} manual labels preserved`);
+      load();
+    } catch (e) { setMsg('Relabel failed: ' + e.message); }
+    setRelabeling(false);
+  };
+
   const nodeColor = (type) => ({ brand: '#f43f5e', topic: '#3b82f6', prompt: '#10b981', model: '#a855f7', url: '#f59e0b', subreddit: '#06b6d4', doctor: '#ec4899' }[type] || '#94a3b8');
 
   return (
@@ -6093,12 +6785,15 @@ function AuthorityGraphPage({ state }) {
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Authority Graph — entities + edges</span>
-          <button className="btn btn-sm btn-primary" onClick={rebuild} disabled={busy}>{busy ? 'Rebuilding...' : 'Rebuild Graph'}</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-sm" onClick={relabelTopics} disabled={relabeling}>{relabeling ? 'Relabeling…' : 'Relabel topics'}</button>
+            <button className="btn btn-sm btn-primary" onClick={rebuild} disabled={busy}>{busy ? 'Rebuilding...' : 'Rebuild Graph'}</button>
+          </div>
         </div>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           Brand → Topic → Prompt → Model → URL → Subreddit. Edges weighted by citation count. Powers explainable Authority Score.
         </p>
-        {msg && <div style={{ fontSize: 11, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
+        {msg && <div style={{ fontSize: 11, color: msg.toLowerCase().includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
       </div>
 
       {summary && (
@@ -6164,6 +6859,99 @@ function AuthorityGraphPage({ state }) {
               <span key={t}><span style={{ display: 'inline-block', width: 10, height: 10, background: nodeColor(t), borderRadius: '50%', marginRight: 4 }}></span>{t}</span>
             ))}
           </div>
+        </div>
+      )}
+
+      {insight && (
+        <div className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Graph Insight</span>
+            <ConfidenceBadge level={insight.confidence || 'estimated'} />
+          </div>
+          {insight.summary_text && (
+            <p style={{ fontSize: 14, color: 'var(--text-primary)', lineHeight: 1.6, margin: '4px 0 14px' }}>
+              {insight.summary_text}
+            </p>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Top brands by degree</div>
+              {(() => {
+                const tb = insight.top_brands_by_degree || [];
+                const maxDeg = Math.max(1, ...tb.map(b => Number(b.degree) || 0));
+                return tb.slice(0, 10).map((b, i) => {
+                  const pct = Math.max(2, Math.round((Number(b.degree) || 0) * 100 / maxDeg));
+                  return (
+                    <div key={`${b.name}-${i}`} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 40px', gap: 6, alignItems: 'center', marginBottom: 4, fontSize: 11 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+                      <span style={{ height: 8, background: 'var(--bg-raised)', borderRadius: 4, overflow: 'hidden' }}>
+                        <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--blue)' }}></span>
+                      </span>
+                      <span style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{b.degree}</span>
+                    </div>
+                  );
+                });
+              })()}
+              {!(insight.top_brands_by_degree || []).length && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</div>}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Top topics</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(insight.top_topics || []).map((t, i) => (
+                  <span key={`${t.label}-${i}`} className="badge blue" title={`${t.prompt_count || 0} prompts · ${t.competitor_count || 0} competitors`}>
+                    {t.label} · {t.prompt_count || 0}
+                  </span>
+                ))}
+                {!(insight.top_topics || []).length && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</div>}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Isolated opportunities</div>
+              {(insight.isolated_opportunities || []).slice(0, 12).map((o, i) => (
+                <div key={i} style={{ padding: '6px 8px', borderRadius: 4, background: 'rgba(244,63,94,0.10)', borderLeft: '2px solid var(--rose)', marginBottom: 4, fontSize: 11 }}>
+                  <span style={{ fontWeight: 600, color: 'var(--rose)' }}>{o.topic_label}</span>
+                  {o.reason && <span style={{ color: 'var(--text-secondary)' }}> — {o.reason}</span>}
+                </div>
+              ))}
+              {!(insight.isolated_opportunities || []).length && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</div>}
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Weakly defended topics</div>
+              {(insight.weakly_defended_topics || []).slice(0, 12).map((w, i) => (
+                <div key={i} style={{ padding: '6px 8px', borderRadius: 4, background: 'rgba(245,158,11,0.10)', borderLeft: '2px solid var(--amber)', marginBottom: 4, fontSize: 11 }}>
+                  <span style={{ fontWeight: 600, color: 'var(--amber)' }}>{w.topic_label || w.label || w.name || '—'}</span>
+                  {w.reason && <span style={{ color: 'var(--text-secondary)' }}> — {w.reason}</span>}
+                </div>
+              ))}
+              {!(insight.weakly_defended_topics || []).length && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</div>}
+            </div>
+          </div>
+
+          {(insight.strongest_edges || []).length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Strongest edges</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11 }}>
+                {insight.strongest_edges.slice(0, 10).map((e, i) => (
+                  <span key={i} className="badge">{e.source || e.from || '?'} → {e.target || e.to || '?'}{e.weight ? ` (${e.weight})` : ''}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(insight.citation_heavy_nodes || []).length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Citation-heavy nodes</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11 }}>
+                {insight.citation_heavy_nodes.slice(0, 12).map((n, i) => (
+                  <span key={i} className="badge purple">{n.label || n.name || n.id || '?'}{n.citations ? ` · ${n.citations}` : ''}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -6805,6 +7593,7 @@ function App() {
     workspaces: WorkspacesPage,
     users: UsersPage,
     competitors: CompetitorsPage,
+    competitor_profiles: CompetitorProfilesPage,
     integrations: IntegrationsPage,
     audit: AuditPage,
     settings: SettingsPage,
