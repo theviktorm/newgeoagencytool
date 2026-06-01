@@ -5407,6 +5407,8 @@ function PromptBattlefieldPage({ state }) {
           <TrackingLogPanel wsId={wsId} onRefresh={load} />
         </div>
       </div>
+      <PageCoverageCard wsId={wsId} />
+
       {comparePromptId && (
         <ComparativeDiagnosisModal
           wsId={wsId}
@@ -5416,6 +5418,87 @@ function PromptBattlefieldPage({ state }) {
         />
       )}
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PAGE COVERAGE CARD — Phase 4
+// ═══════════════════════════════════════════════════════════════
+
+function PageCoverageCard({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [rows, setRows] = useState([]);
+  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [briefFor, setBriefFor] = useState(null);
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/page-mapping/${wsId}?only_missing=${onlyMissing}`, {}, token)
+      .then(r => setRows(r.data || r || []))
+      .catch(e => setMsg('Load failed: ' + e.message));
+  };
+  useEffect(load, [wsId, onlyMissing]);
+
+  const mapWorkspace = async () => {
+    setBusy(true); setMsg('');
+    try { const r = await api(`/api/page-mapping/${wsId}/map-workspace`, { method: 'POST' }, token); const d = r.data || r; setMsg(`Mapped ${d.mapped || 0} prompts; ${(d.missing_pages || []).length} missing pages.`); load(); }
+    catch (e) { setMsg('Map workspace failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const mapOne = async (promptId) => {
+    setBusy(true); setMsg('');
+    try { await api(`/api/page-mapping/${wsId}/${promptId}/map`, { method: 'POST' }, token); setMsg('Mapped.'); load(); }
+    catch (e) { setMsg('Map failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const linkify = url => {
+    if (!url) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+    let href = String(url);
+    if (!/^https?:\/\//i.test(href)) href = 'https://' + href;
+    return <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all' }}>{String(url).slice(0, 60)}</a>;
+  };
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Page coverage — prompt → page mapping</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <label style={{ fontSize: 11, display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input type="checkbox" checked={onlyMissing} onChange={e => setOnlyMissing(e.target.checked)} /> Only missing pages
+            </label>
+            <button className="btn btn-sm btn-primary" onClick={mapWorkspace} disabled={busy || !wsId}>{busy ? 'Working…' : 'Map Workspace'}</button>
+          </div>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)', marginBottom: 6 }}>{msg}</div>}
+        {rows.length === 0 ? (
+          <div className="empty-state" style={{ fontSize: 12 }}>◌<br/>No mappings yet. Click Map Workspace to scan prompts vs your pages.</div>
+        ) : (
+          <table className="data-table"><thead><tr>
+            <th>Prompt</th><th>Page type</th><th>Target URL</th><th>Current best URL</th><th>Missing?</th><th>Competitor winning URL</th><th>Confidence</th><th></th>
+          </tr></thead><tbody>{rows.map(r => (
+            <tr key={r.id || r.prompt_id}>
+              <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.prompt_text || r.prompt_id}</td>
+              <td>{r.page_type ? <span className="badge">{r.page_type}</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+              <td>{linkify(r.target_url)}</td>
+              <td>{linkify(r.current_best_url)}</td>
+              <td>{r.missing_page ? <span className="badge rose">missing</span> : <span className="badge emerald">covered</span>}</td>
+              <td>{linkify(r.competitor_winning_url)}</td>
+              <td><ConfidenceBadge level={r.confidence || 'estimated'} /></td>
+              <td style={{ whiteSpace: 'nowrap' }}>
+                <button className="btn btn-sm" onClick={() => mapOne(r.prompt_id)} disabled={busy}>Map</button>
+                {r.missing_page ? <button className="btn btn-sm btn-primary" style={{ marginLeft: 4 }} onClick={() => setBriefFor(r.prompt_id)}>Generate Brief</button> : null}
+              </td>
+            </tr>
+          ))}</tbody></table>
+        )}
+      </div>
+      {briefFor && <GeoBriefModal wsId={wsId} promptId={briefFor} onClose={() => setBriefFor(null)} />}
+    </>
   );
 }
 
@@ -6110,6 +6193,89 @@ function BuyerJourneyPage({ state }) {
 }
 
 // 6. Reddit Command Center
+
+const _RISK_COLORS = { low: 'emerald', med: 'amber', medium: 'amber', high: 'rose' };
+
+function CommunityOpportunitiesPanel({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!wsId) return;
+    api(`/api/community/${wsId}/opportunities`, {}, token)
+      .then(r => setData(r.data || r))
+      .catch(e => setErr(e.message || 'Failed to load'));
+  }, [wsId, token]);
+
+  const opps = data?.opportunities || [];
+  const disclaimer = data?.disclaimer;
+
+  return (
+    <div className="card" style={{ display: 'grid', gap: 12 }}>
+      <div className="card-header">Community Opportunity Finder</div>
+
+      {disclaimer && (
+        <div style={{ border: '1px solid var(--amber)', background: 'rgba(245, 158, 11, 0.08)', borderRadius: 6, padding: '8px 10px', fontSize: 11, color: 'var(--amber)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 13 }}>⚠</span>
+          <span>{disclaimer}</span>
+        </div>
+      )}
+
+      {err && <div style={{ fontSize: 11, color: 'var(--rose)' }}>{err}</div>}
+
+      {opps.length === 0 ? (
+        <div className="empty-state">☴<br/>No community opportunities yet. Harvest Reddit data first.</div>
+      ) : opps.map((opp, i) => {
+        const risk = String(opp.risk_level || '').toLowerCase();
+        const riskCls = _RISK_COLORS[risk] || 'gray';
+        return (
+          <div key={i} style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 12, background: 'var(--bg-raised)', display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="badge purple">r/{opp.subreddit}</span>
+              {opp.topic && <span style={{ fontWeight: 600 }}>{opp.topic}</span>}
+              {risk && <span className={`badge ${riskCls}`}>risk: {opp.risk_level}</span>}
+            </div>
+            {opp.user_question && (
+              <div style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--text-secondary)' }}>"{opp.user_question}"</div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Suggested content angle</div>
+                <div style={{ fontSize: 12 }}>{opp.suggested_content_angle || '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Possible FAQ</div>
+                {opp.possible_faq ? (
+                  typeof opp.possible_faq === 'object' && (opp.possible_faq.q || opp.possible_faq.question) ? (
+                    <div style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 700 }}>{opp.possible_faq.q || opp.possible_faq.question}</div>
+                      <div style={{ color: 'var(--text-secondary)' }}>{opp.possible_faq.a || opp.possible_faq.answer || ''}</div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{typeof opp.possible_faq === 'string' ? opp.possible_faq : JSON.stringify(opp.possible_faq)}</div>
+                  )
+                ) : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</div>}
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Intent</div>
+                {opp.intent ? <span className="badge gray">{opp.intent}</span> : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>}
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Recommended action</div>
+                <div style={{ fontSize: 12 }}>{opp.recommended_action || '—'}</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <ConfidenceBadge level={opp.confidence || 'estimated'} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function RedditCommandPage({ state }) {
   const { token } = useContext(AuthContext);
   const wsId = state.activeWorkspace?.id;
@@ -6149,6 +6315,7 @@ function RedditCommandPage({ state }) {
 
   return (
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
+      <CommunityOpportunitiesPanel wsId={wsId} />
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Reddit Command Center</span>
@@ -6962,6 +7129,268 @@ function AuthorityGraphPage({ state }) {
 // BRAND MANAGER
 // ═══════════════════════════════════════════════════════════════
 
+function _relTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '—';
+  const diff = Date.now() - t;
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
+}
+
+function ReviewIntelligencePanel({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [summary, setSummary] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({ brand: '', platform: '', review_count: '', avg_rating: '', latest_review_at: '', sentiment_score: '', source_url: '' });
+
+  const load = () => {
+    if (!wsId) return;
+    api(`/api/reviews/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => setSummary(null));
+  };
+  useEffect(load, [wsId]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.brand.trim() || !form.platform.trim()) { setMsg('Brand and platform are required.'); return; }
+    setMsg('');
+    try {
+      const body = {
+        brand: form.brand,
+        platform: form.platform,
+        review_count: form.review_count !== '' ? Number(form.review_count) : null,
+        avg_rating: form.avg_rating !== '' ? Number(form.avg_rating) : null,
+        latest_review_at: form.latest_review_at || null,
+        sentiment_score: form.sentiment_score !== '' ? Number(form.sentiment_score) : null,
+        source_url: form.source_url || null,
+      };
+      await api(`/api/reviews/${wsId}/signal`, { method: 'POST', body: JSON.stringify(body) }, token);
+      setMsg('Saved.');
+      setForm({ brand: '', platform: '', review_count: '', avg_rating: '', latest_review_at: '', sentiment_score: '', source_url: '' });
+      load();
+    } catch (err) { setMsg('Failed: ' + err.message); }
+  };
+
+  const brands = summary?.brands || [];
+  const disclaimer = summary?.disclaimer;
+
+  return (
+    <div className="card" style={{ display: 'grid', gap: 12 }}>
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>Review Intelligence</span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {summary?.overall_confidence && <ConfidenceBadge level={summary.overall_confidence} />}
+          <button className="btn btn-sm" onClick={load}>Refresh</button>
+        </div>
+      </div>
+
+      {disclaimer && (
+        <div style={{ border: '1px solid var(--amber)', background: 'rgba(245, 158, 11, 0.08)', borderRadius: 6, padding: '8px 10px', fontSize: 11, color: 'var(--amber)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 13 }}>⚠</span>
+          <span>{disclaimer}</span>
+        </div>
+      )}
+
+      {brands.length === 0 ? (
+        <div className="empty-state">★<br/>No review signals yet. Record one to start tracking review intelligence.</div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {brands.map((b, i) => {
+            const t = b.totals || {};
+            const sent = t.sentiment_score;
+            const sentPct = sent != null ? Math.max(0, Math.min(100, Math.round(((Number(sent) + 1) / 2) * 100))) : null;
+            const sentColor = sent == null ? 'var(--text-muted)' : sent > 0.2 ? 'var(--emerald)' : sent < -0.2 ? 'var(--rose)' : 'var(--amber)';
+            return (
+              <div key={b.brand || i} style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 10, background: 'var(--bg-raised)', display: 'grid', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600 }}>{b.brand}</span>
+                  {(b.platforms || []).map(p => <span key={p} className="badge gray" style={{ fontSize: 10 }}>{p}</span>)}
+                  <ConfidenceBadge level={b.confidence || 'estimated'} />
+                </div>
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <span><span style={{ color: 'var(--text-muted)' }}>reviews </span><span style={{ fontFamily: 'var(--font-mono)' }}>{t.review_count ?? '—'}</span></span>
+                  <span><span style={{ color: 'var(--text-muted)' }}>avg </span>{t.avg_rating != null ? `${Number(t.avg_rating).toFixed(1)} ★` : '—'}</span>
+                  <span><span style={{ color: 'var(--text-muted)' }}>latest </span>{_relTime(t.latest_review_at)}</span>
+                </div>
+                {sentPct != null && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
+                    <span style={{ color: 'var(--text-muted)', minWidth: 60 }}>sentiment</span>
+                    <div style={{ flex: 1, height: 6, background: 'var(--border-subtle)', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ width: `${sentPct}%`, height: '100%', background: sentColor }} />
+                    </div>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: sentColor, minWidth: 40, textAlign: 'right' }}>{Number(sent).toFixed(2)}</span>
+                  </div>
+                )}
+                {b.recommended_review_strategy && (
+                  <div style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--text-secondary)' }}>{b.recommended_review_strategy}</div>
+                )}
+                {b.disclaimer && !disclaimer && (
+                  <div style={{ fontSize: 10, color: 'var(--amber)' }}>⚠ {b.disclaimer}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <form onSubmit={submit} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, display: 'grid', gap: 6 }}>
+        <div style={{ fontWeight: 600, fontSize: 12 }}>Record review signal</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+          <input className="form-input" placeholder="Brand" value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))} />
+          <input className="form-input" placeholder="Platform (e.g. Google, Trustpilot)" value={form.platform} onChange={e => setForm(f => ({ ...f, platform: e.target.value }))} />
+          <input className="form-input" type="number" placeholder="Review count" value={form.review_count} onChange={e => setForm(f => ({ ...f, review_count: e.target.value }))} />
+          <input className="form-input" type="number" step="0.1" placeholder="Avg rating" value={form.avg_rating} onChange={e => setForm(f => ({ ...f, avg_rating: e.target.value }))} />
+          <input className="form-input" type="date" placeholder="Latest review at" value={form.latest_review_at} onChange={e => setForm(f => ({ ...f, latest_review_at: e.target.value }))} />
+          <input className="form-input" type="number" step="0.1" min="-1" max="1" placeholder="Sentiment (-1..1)" value={form.sentiment_score} onChange={e => setForm(f => ({ ...f, sentiment_score: e.target.value }))} />
+          <input className="form-input" placeholder="Source URL" value={form.source_url} onChange={e => setForm(f => ({ ...f, source_url: e.target.value }))} style={{ gridColumn: '1 / -1' }} />
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button type="submit" className="btn btn-sm btn-primary">Record signal</button>
+          {msg && <span style={{ fontSize: 11, color: msg.includes('Failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</span>}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+const _ECS_COLORS = { consistent: 'var(--emerald)', inconsistent: 'var(--rose)', missing: 'var(--text-muted)' };
+
+function EntityConsistencyPanel({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [showRecent, setShowRecent] = useState(false);
+  const [recent, setRecent] = useState(null);
+  const [recentBusy, setRecentBusy] = useState(false);
+
+  const runCheck = async () => {
+    if (!wsId) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/entity-consistency/${wsId}/check`, { method: 'POST' }, token);
+      setResult(r.data || r);
+    } catch (e) { setMsg('Check failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const toggleRecent = async () => {
+    const next = !showRecent;
+    setShowRecent(next);
+    if (next && recent == null && wsId) {
+      setRecentBusy(true);
+      try {
+        const r = await api(`/api/entity-consistency/${wsId}/recent?limit=50`, {}, token);
+        const rows = r.data || r;
+        setRecent(Array.isArray(rows) ? rows : (rows?.rows || []));
+      } catch (e) { setRecent([]); }
+      setRecentBusy(false);
+    }
+  };
+
+  const axes = result?.axes || [];
+
+  return (
+    <div className="card" style={{ display: 'grid', gap: 12 }}>
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>Entity Consistency</span>
+        <button className="btn btn-sm btn-primary" onClick={runCheck} disabled={busy || !wsId}>{busy ? 'Checking…' : 'Run Consistency Check'}</button>
+      </div>
+
+      {!result ? (
+        <div className="empty-state">⌖<br/>Verify your brand name, address, hours, and phone are identical across every source AI uses to ground answers. Click <b>Run Consistency Check</b> to start.</div>
+      ) : (
+        <React.Fragment>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="metric-card" style={{ minWidth: 140 }}>
+              <div className="metric-label">OVERALL SCORE</div>
+              <div className="metric-value">{result.overall_score != null ? Math.round(result.overall_score) : '—'}</div>
+            </div>
+            <ConfidenceBadge level={result.confidence || 'estimated'} />
+            {result.observed_at && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>observed {_relTime(result.observed_at)}</span>}
+          </div>
+          {msg && <div style={{ fontSize: 11, color: 'var(--rose)' }}>{msg}</div>}
+
+          {axes.length > 0 && (
+            <table className="data-table">
+              <thead><tr><th>Axis</th><th>Sources</th><th>Recommended fix</th><th>Confidence</th></tr></thead>
+              <tbody>
+                {axes.map((ax, i) => (
+                  <tr key={ax.axis || i}>
+                    <td style={{ fontWeight: 600 }}>{ax.axis}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {Object.entries(ax.statuses_per_source || {}).map(([src, status]) => {
+                          const color = _ECS_COLORS[String(status).toLowerCase()] || 'var(--text-muted)';
+                          return (
+                            <span key={src} title={`${src}: ${status}`} style={{
+                              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 7px',
+                              borderRadius: 9, fontSize: 10, fontWeight: 600, fontFamily: 'var(--font-mono)',
+                              color, background: `${color}22`, whiteSpace: 'nowrap',
+                            }}>
+                              <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+                              {src}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      {(ax.inconsistencies || []).length > 0 && (
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                          {(ax.inconsistencies || []).map((inc, j) => <div key={j}>· {typeof inc === 'string' ? inc : JSON.stringify(inc)}</div>)}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 12 }}>{ax.recommended_fix || '—'}</td>
+                    <td><ConfidenceBadge level={ax.confidence || 'estimated'} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+            <button className="btn btn-sm" onClick={toggleRecent}>{showRecent ? '▾' : '▸'} Recent observations</button>
+            {showRecent && (
+              <div style={{ marginTop: 8 }}>
+                {recentBusy ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</div>
+                  : !recent || recent.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No observations yet.</div>
+                  : (
+                    <table className="data-table">
+                      <thead><tr><th>Axis</th><th>Source</th><th>Value</th><th>Status</th><th>Observed at</th></tr></thead>
+                      <tbody>
+                        {recent.slice(0, 50).map((row, i) => {
+                          const color = _ECS_COLORS[String(row.status).toLowerCase()] || 'var(--text-muted)';
+                          return (
+                            <tr key={i}>
+                              <td>{row.axis || '—'}</td>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{row.source || '—'}</td>
+                              <td style={{ fontSize: 11 }}>{row.value || '—'}</td>
+                              <td><span className="badge" style={{ color, background: `${color}22` }}>{row.status || '—'}</span></td>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{_relTime(row.observed_at)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+              </div>
+            )}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 function BrandManagerPage({ state }) {
   const { token } = useContext(AuthContext);
   const wsId = state.activeWorkspace?.id;
@@ -7023,6 +7452,8 @@ function BrandManagerPage({ state }) {
           ))}</tbody></table>
         )}
       </div>
+      <ReviewIntelligencePanel wsId={wsId} />
+      <EntityConsistencyPanel wsId={wsId} />
     </div>
   );
 }
@@ -7189,14 +7620,483 @@ function ComparativeReportPage({ state }) {
           <iframe srcDoc={html} style={{ width: '100%', height: 800, border: 'none', borderRadius: 6 }} title="report" />
         </div>
       )}
+
+      <WorkspaceImpactReportCard wsId={state.activeWorkspace?.id} />
     </div>
   );
 }
+
+// ═══════════════════════════════════════════════════════════════
+// GEO BRIEF MODAL — Phase 4
+// ═══════════════════════════════════════════════════════════════
+
+function GeoBriefModal({ wsId, promptId, briefId: initialBriefId, readOnly, onClose }) {
+  const { token } = useContext(AuthContext);
+  const [brief, setBrief] = useState(null);
+  const [error, setError] = useState('');
+  const [pushing, setPushing] = useState(false);
+  const [msg, setMsg] = useState('');
+  const loading = !brief && !error;
+
+  useEffect(() => {
+    let cancelled = false;
+    setBrief(null); setError('');
+    const fetcher = initialBriefId
+      ? api(`/api/briefs/${wsId}`, {}, token).then(r => {
+          const list = r.data || r || [];
+          const found = list.find(b => b.id === initialBriefId);
+          return found ? { data: found } : { data: null };
+        })
+      : api(`/api/briefs/${wsId}/${promptId}/generate?push=false`, { method: 'POST' }, token);
+    fetcher
+      .then(r => { if (!cancelled) setBrief(r.data || r); })
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load brief'); });
+    return () => { cancelled = true; };
+  }, [wsId, promptId, initialBriefId, token]);
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose && onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const pushToActions = async () => {
+    if (!brief?.id) return;
+    setPushing(true); setMsg('');
+    try {
+      const r = await api(`/api/briefs/${brief.id}/push-to-actions`, { method: 'POST' }, token);
+      const d = r.data || r;
+      setMsg(`Action created (${d.action_id || 'ok'}). Closing…`);
+      setTimeout(() => onClose && onClose(), 900);
+    } catch (e) { setMsg('Push failed: ' + e.message); }
+    setPushing(false);
+  };
+
+  const toMarkdown = (bj) => {
+    if (!bj) return '';
+    const lines = [];
+    lines.push(`# ${bj.suggested_h1 || bj.target_prompt || 'GEO Brief'}`);
+    if (bj.target_prompt) lines.push(`\n**Target prompt:** ${bj.target_prompt}`);
+    if (bj.buyer_stage) lines.push(`**Buyer stage:** ${bj.buyer_stage}`);
+    if (bj.search_intent) lines.push(`**Search intent:** ${bj.search_intent}`);
+    if (bj.recommended_page_type) lines.push(`**Page type:** ${bj.recommended_page_type}`);
+    if (Array.isArray(bj.suggested_h2_outline) && bj.suggested_h2_outline.length) {
+      lines.push(`\n## H2 outline`);
+      bj.suggested_h2_outline.forEach((h, i) => lines.push(`${i + 1}. ${h}`));
+    }
+    if (bj.direct_answer_block) lines.push(`\n## Direct answer\n> ${bj.direct_answer_block}`);
+    if (Array.isArray(bj.decision_support_sections) && bj.decision_support_sections.length) {
+      lines.push(`\n## Decision support`);
+      bj.decision_support_sections.forEach(s => lines.push(`- ${s}`));
+    }
+    if (Array.isArray(bj.comparison_table) && bj.comparison_table.length) {
+      lines.push(`\n## Comparison`);
+      lines.push(`| Column | Us | Competitor |`);
+      lines.push(`| --- | --- | --- |`);
+      bj.comparison_table.forEach(row => lines.push(`| ${row.column || ''} | ${row.our || ''} | ${row.competitor || ''} |`));
+    }
+    if (Array.isArray(bj.faq_questions) && bj.faq_questions.length) {
+      lines.push(`\n## FAQ`);
+      bj.faq_questions.forEach(q => {
+        if (typeof q === 'string') lines.push(`- ${q}`);
+        else lines.push(`- **${q.q || q.question || ''}** — ${q.a || q.answer || ''}`);
+      });
+    }
+    if (Array.isArray(bj.schema_type) && bj.schema_type.length) {
+      lines.push(`\n**Schema:** ${bj.schema_type.join(', ')}`);
+    }
+    if (Array.isArray(bj.trust_proof_needed) && bj.trust_proof_needed.length) {
+      lines.push(`\n## Trust proof needed`);
+      bj.trust_proof_needed.forEach(t => lines.push(`- ${t}`));
+    }
+    if (Array.isArray(bj.internal_link_suggestions) && bj.internal_link_suggestions.length) {
+      lines.push(`\n## Internal links`);
+      bj.internal_link_suggestions.forEach(l => lines.push(`- ${l}`));
+    }
+    if (Array.isArray(bj.external_proof_suggestions) && bj.external_proof_suggestions.length) {
+      lines.push(`\n## External proof`);
+      bj.external_proof_suggestions.forEach(l => lines.push(`- ${l}`));
+    }
+    if (bj.cta_angle) lines.push(`\n## CTA angle\n${bj.cta_angle}`);
+    if (Array.isArray(bj.competitor_pages_to_study) && bj.competitor_pages_to_study.length) {
+      lines.push(`\n## Competitor pages to study`);
+      bj.competitor_pages_to_study.forEach(l => lines.push(`- ${l}`));
+    }
+    if (bj.success_metric) lines.push(`\n**Success metric:** ${bj.success_metric}`);
+    if (bj.re_track_schedule_days != null) lines.push(`**Re-track in:** ${bj.re_track_schedule_days}d`);
+    return lines.join('\n');
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(toMarkdown(brief?.brief_json));
+      setMsg('Copied to clipboard.');
+    } catch { setMsg('Copy failed.'); }
+  };
+
+  const bj = brief?.brief_json || {};
+  const intentColor = { transactional: 'rose', commercial: 'amber', comparison: 'purple', informational: 'blue', navigational: 'gray' };
+
+  const linkify = url => {
+    if (!url) return null;
+    let href = String(url);
+    if (!/^https?:\/\//i.test(href)) href = 'https://' + href;
+    return <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all' }}>{String(url).slice(0, 100)}</a>;
+  };
+
+  return (
+    <div className="modal-overlay" onClick={() => onClose && onClose()}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 920, width: '92vw' }}>
+        <div className="modal-header">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <h3 style={{ marginBottom: 0 }}>GEO Brief {readOnly ? '— read-only' : ''}</h3>
+            {brief && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                {bj.target_prompt && <span style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 600 }}>{bj.target_prompt}</span>}
+                {bj.recommended_page_type && <span className="badge purple">{bj.recommended_page_type}</span>}
+                {bj.search_intent && <span className={`badge ${intentColor[bj.search_intent] || 'gray'}`}>{bj.search_intent}</span>}
+                <ConfidenceBadge level={bj.confidence || 'estimated'} />
+              </div>
+            )}
+          </div>
+          <button className="modal-close" onClick={() => onClose && onClose()}>{'×'}</button>
+        </div>
+        <div className="modal-body">
+          {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Generating brief…</div>}
+          {error && <div style={{ color: 'var(--rose)', fontSize: 12 }}>{error}</div>}
+          {brief && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              {bj.suggested_h1 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Suggested H1</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-secondary)' }}>{bj.suggested_h1}</div>
+                </div>
+              )}
+
+              {Array.isArray(bj.suggested_h2_outline) && bj.suggested_h2_outline.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>H2 outline</div>
+                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                    {bj.suggested_h2_outline.map((h, i) => <li key={i}>{h}</li>)}
+                  </ol>
+                </div>
+              )}
+
+              {bj.direct_answer_block && (
+                <div className="card" style={{ padding: 12, borderLeft: '3px solid var(--emerald)', background: 'rgba(16,185,129,0.06)' }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Direct answer block</div>
+                  <div style={{ fontStyle: 'italic', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>"{bj.direct_answer_block}"</div>
+                </div>
+              )}
+
+              {Array.isArray(bj.decision_support_sections) && bj.decision_support_sections.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Decision support sections</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                    {bj.decision_support_sections.map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {Array.isArray(bj.comparison_table) && bj.comparison_table.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Comparison table</div>
+                  <table className="data-table"><thead><tr><th>Column</th><th>Us</th><th>Competitor</th></tr></thead><tbody>
+                    {bj.comparison_table.map((row, i) => (
+                      <tr key={i}><td style={{ fontWeight: 600 }}>{row.column || '—'}</td><td>{row.our || '—'}</td><td>{row.competitor || '—'}</td></tr>
+                    ))}
+                  </tbody></table>
+                </div>
+              )}
+
+              {Array.isArray(bj.faq_questions) && bj.faq_questions.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>FAQ</div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {bj.faq_questions.map((q, i) => (
+                      <div key={i} style={{ fontSize: 12 }}>
+                        {typeof q === 'string'
+                          ? <div style={{ fontWeight: 600 }}>Q: {q}</div>
+                          : (<><div style={{ fontWeight: 600 }}>Q: {q.q || q.question || ''}</div>{(q.a || q.answer) && <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>A: {q.a || q.answer}</div>}</>)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {Array.isArray(bj.schema_type) && bj.schema_type.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Schema types</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {bj.schema_type.map((s, i) => <span key={i} className="badge cyan">{s}</span>)}
+                  </div>
+                </div>
+              )}
+
+              {Array.isArray(bj.trust_proof_needed) && bj.trust_proof_needed.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Trust proof needed</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                    {bj.trust_proof_needed.map((t, i) => <li key={i}>{t}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                {Array.isArray(bj.internal_link_suggestions) && bj.internal_link_suggestions.length > 0 && (
+                  <div className="card" style={{ padding: 12 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Internal links</div>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
+                      {bj.internal_link_suggestions.map((l, i) => <li key={i}>{l}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {Array.isArray(bj.external_proof_suggestions) && bj.external_proof_suggestions.length > 0 && (
+                  <div className="card" style={{ padding: 12 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>External proof</div>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.5 }}>
+                      {bj.external_proof_suggestions.map((l, i) => <li key={i}>{l}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              {bj.cta_angle && (
+                <div className="card" style={{ padding: 12, borderLeft: '3px solid var(--amber)', background: 'rgba(245,158,11,0.06)' }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>CTA angle</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{bj.cta_angle}</div>
+                </div>
+              )}
+
+              {Array.isArray(bj.competitor_pages_to_study) && bj.competitor_pages_to_study.length > 0 && (
+                <div className="card" style={{ padding: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Competitor pages to study</div>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    {bj.competitor_pages_to_study.map((u, i) => <div key={i}>{linkify(u)}</div>)}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+                {bj.success_metric && <span><b style={{ color: 'var(--text-secondary)' }}>Success metric:</b> {bj.success_metric}</span>}
+                {bj.re_track_schedule_days != null && <span><b style={{ color: 'var(--text-secondary)' }}>Re-track:</b> {bj.re_track_schedule_days}d</span>}
+              </div>
+            </div>
+          )}
+        </div>
+        {brief && (
+          <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderTop: '1px solid var(--border-subtle)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-sm btn-primary" onClick={pushToActions} disabled={pushing || readOnly}>{pushing ? 'Pushing…' : 'Push to Action Engine'}</button>
+            <button className="btn btn-sm" onClick={() => { setMsg('Switch to Content Studio to draft this brief.'); }}>Open Content Studio</button>
+            <button className="btn btn-sm" onClick={copy}>Copy to clipboard</button>
+            <button className="btn btn-sm" onClick={() => onClose && onClose()}>Close</button>
+            {msg && <span style={{ fontSize: 11, color: msg.includes('fail') || msg.includes('Failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WORKSPACE IMPACT REPORT CARD — Phase 4
+// ═══════════════════════════════════════════════════════════════
+
+function WorkspaceImpactReportCard({ wsId }) {
+  const { token } = useContext(AuthContext);
+  const [days, setDays] = useState(30);
+  const [report, setReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [actionId, setActionId] = useState('');
+  const [actionReport, setActionReport] = useState(null);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  const run = async () => {
+    if (!wsId) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/reports/${wsId}/workspace?days=${days}`, {}, token);
+      setReport(r.data || r);
+    } catch (e) { setMsg('Report failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const openHtml = () => {
+    if (!wsId) return;
+    const url = `${API}/api/reports/${wsId}/workspace.html?days=${days}${token ? `&token=${token}` : ''}`;
+    window.open(url, '_blank');
+  };
+
+  const runActionReport = async () => {
+    if (!actionId.trim()) return;
+    setActionBusy(true);
+    try {
+      const r = await api(`/api/reports/action/${actionId.trim()}`, {}, token);
+      setActionReport(r.data || r);
+    } catch (e) { setActionReport({ error: e.message }); }
+    setActionBusy(false);
+  };
+
+  const dColor = v => (v == null ? 'var(--text-muted)' : v > 0 ? 'var(--emerald)' : v < 0 ? 'var(--rose)' : 'var(--text-muted)');
+  const fmt = v => v == null ? '—' : (v > 0 ? '+' : '') + (typeof v === 'number' ? v.toFixed(1) : v);
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Workspace Impact Report — before/after deltas</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <select className="form-input" value={days} onChange={e => setDays(parseInt(e.target.value, 10))} style={{ width: 110 }}>
+              <option value={7}>7 days</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days</option>
+            </select>
+            <button className="btn btn-sm btn-primary" onClick={run} disabled={busy || !wsId}>{busy ? 'Running…' : 'Run Report'}</button>
+            <button className="btn btn-sm" onClick={openHtml} disabled={!wsId}>Open HTML Report</button>
+          </div>
+        </div>
+        {msg && <div style={{ fontSize: 11, color: 'var(--rose)' }}>{msg}</div>}
+        {!report ? (
+          <div className="empty-state" style={{ fontSize: 12 }}>◎<br/>Run a report to see workspace deltas over the chosen window.</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 12, marginTop: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(report.authority_delta)}` }}>
+                <div className="metric-label">AUTHORITY Δ</div>
+                <div className="metric-value" style={{ color: dColor(report.authority_delta) }}>{fmt(report.authority_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(report.ownership_delta)}` }}>
+                <div className="metric-label">OWNERSHIP Δ</div>
+                <div className="metric-value" style={{ color: dColor(report.ownership_delta) }}>{fmt(report.ownership_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(report.aio_delta)}` }}>
+                <div className="metric-label">AIO Δ</div>
+                <div className="metric-value" style={{ color: dColor(report.aio_delta) }}>{fmt(report.aio_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(report.revenue_at_stake_delta)}` }}>
+                <div className="metric-label">€ AT STAKE Δ</div>
+                <div className="metric-value" style={{ color: dColor(report.revenue_at_stake_delta) }}>{fmt(report.revenue_at_stake_delta)}</div>
+              </div>
+            </div>
+
+            {report.narrative && (
+              <div style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(99,102,241,0.04))', padding: 12, borderRadius: 6, fontStyle: 'italic', fontSize: 13, color: 'var(--text-secondary)' }}>{report.narrative}</div>
+            )}
+
+            {Array.isArray(report.competitor_movement) && report.competitor_movement.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Competitor movement</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {report.competitor_movement.map((c, i) => (
+                    <span key={i} className={`badge ${(c.delta || 0) > 0 ? 'rose' : 'emerald'}`}>
+                      {c.domain || c.name || c.competitor || 'competitor'} {(c.delta || 0) > 0 ? '+' : ''}{c.delta != null ? c.delta : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {Array.isArray(report.completed_actions) && report.completed_actions.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Completed actions in window</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                  {report.completed_actions.map((a, i) => <li key={i}>{a.title || a.id || JSON.stringify(a)}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {Array.isArray(report.next_recommendations) && report.next_recommendations.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Next recommendations</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                  {report.next_recommendations.map((r, i) => <li key={i}>{typeof r === 'string' ? r : (r.title || r.text || JSON.stringify(r))}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {report.disclaimer && (
+              <div style={{ background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)', color: 'var(--amber)', padding: '8px 12px', borderRadius: 6, fontSize: 11 }}>
+                ⚠ {report.disclaimer}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Action Impact — single action before/after</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input className="form-input" placeholder="action_id" value={actionId} onChange={e => setActionId(e.target.value)} style={{ width: 260 }} />
+            <button className="btn btn-sm btn-primary" onClick={runActionReport} disabled={actionBusy || !actionId.trim()}>{actionBusy ? 'Loading…' : 'Action Impact'}</button>
+          </div>
+        </div>
+        {!actionReport ? (
+          <div className="empty-state" style={{ fontSize: 12 }}>◎<br/>Paste an action_id to see its before/after impact.</div>
+        ) : actionReport.error ? (
+          <div style={{ color: 'var(--rose)', fontSize: 12 }}>{actionReport.error}</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 10 }}>
+            {actionReport.action && (
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{actionReport.action.title || actionReport.action.id}</div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(actionReport.ownership_delta)}` }}>
+                <div className="metric-label">OWNERSHIP Δ</div>
+                <div className="metric-value" style={{ color: dColor(actionReport.ownership_delta) }}>{fmt(actionReport.ownership_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(actionReport.citation_delta)}` }}>
+                <div className="metric-label">CITATION Δ</div>
+                <div className="metric-value" style={{ color: dColor(actionReport.citation_delta) }}>{fmt(actionReport.citation_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(actionReport.authority_delta)}` }}>
+                <div className="metric-label">AUTHORITY Δ</div>
+                <div className="metric-value" style={{ color: dColor(actionReport.authority_delta) }}>{fmt(actionReport.authority_delta)}</div>
+              </div>
+              <div className="metric-card" style={{ borderTop: `2px solid ${dColor(actionReport.aio_delta)}` }}>
+                <div className="metric-label">AIO Δ</div>
+                <div className="metric-value" style={{ color: dColor(actionReport.aio_delta) }}>{fmt(actionReport.aio_delta)}</div>
+              </div>
+            </div>
+            {actionReport.narrative && (
+              <div style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--text-secondary)' }}>{actionReport.narrative}</div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="card" style={{ padding: 10 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Before</div>
+                <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 10, maxHeight: 200, overflow: 'auto', margin: 0, whiteSpace: 'pre-wrap' }}>{actionReport.before_snapshot ? JSON.stringify(actionReport.before_snapshot, null, 2) : '—'}</pre>
+              </div>
+              <div className="card" style={{ padding: 10 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>After</div>
+                <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 10, maxHeight: 200, overflow: 'auto', margin: 0, whiteSpace: 'pre-wrap' }}>{actionReport.after_snapshot ? JSON.stringify(actionReport.after_snapshot, null, 2) : '—'}</pre>
+              </div>
+            </div>
+            {Array.isArray(actionReport.competitor_movement) && actionReport.competitor_movement.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Competitor movement</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {actionReport.competitor_movement.map((c, i) => (
+                    <span key={i} className="badge gray">{c.domain || c.name || 'competitor'} {c.delta != null ? `(${c.delta > 0 ? '+' : ''}${c.delta})` : ''}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function ActionsPage({ state }) {
   const { token } = useContext(AuthContext);
   const wsId = state.activeWorkspace?.id;
   const [actions, setActions] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [workflow, setWorkflow] = useState(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -7207,8 +8107,58 @@ function ActionsPage({ state }) {
     const qs = statusFilter === 'all' ? '' : `?status=${statusFilter}`;
     api(`/api/actions/${wsId}${qs}${qs ? '&' : '?'}limit=200`, {}, token).then(r => setActions(r.data || [])).catch(() => {});
     api(`/api/actions/${wsId}/summary`, {}, token).then(r => setSummary(r.data || r)).catch(() => {});
+    api(`/api/actions/${wsId}/workflow`, {}, token).then(r => setWorkflow(r.data || r)).catch(() => {});
   };
   useEffect(load, [wsId, statusFilter]);
+
+  const beforeSnapshot = async (id) => {
+    setBusy(true); setMsg('');
+    try {
+      await api(`/api/actions/${wsId}/${id}/before-snapshot`, { method: 'POST' }, token);
+      const t = new Date();
+      const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+      setMsg(`✓ snapshot at ${hhmm}`);
+      setTimeout(() => setMsg(m => m.startsWith('✓ snapshot') ? '' : m), 3000);
+      load();
+    } catch (e) { setMsg('before snapshot failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const afterSnapshot = async (id) => {
+    setBusy(true); setMsg('');
+    try {
+      await api(`/api/actions/${wsId}/${id}/after-snapshot`, { method: 'POST' }, token);
+      const t = new Date();
+      const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+      setMsg(`✓ snapshot at ${hhmm}`);
+      setTimeout(() => setMsg(m => m.startsWith('✓ snapshot') ? '' : m), 3000);
+      load();
+    } catch (e) { setMsg('after snapshot failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const scheduleRetrack = async (id) => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/actions/${wsId}/${id}/schedule-retrack?days=7`, { method: 'POST' }, token);
+      const date = r.data?.scheduled_at ? new Date(r.data.scheduled_at).toLocaleDateString() : '';
+      setMsg(`✓ scheduled ${date}`);
+      setTimeout(() => setMsg(m => m.startsWith('✓ scheduled') ? '' : m), 3000);
+      load();
+    } catch (e) { setMsg('Schedule re-track failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  const runDueRetracks = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api(`/api/actions/${wsId}/run-due-retracks`, { method: 'POST' }, token);
+      const d = r.data || r;
+      setMsg(`Ran ${d.ran || 0}, completed ${d.completed ?? d.ran ?? 0}`);
+      load();
+    } catch (e) { setMsg('Run due re-tracks failed: ' + e.message); }
+    setBusy(false);
+  };
 
   const harvest = async () => {
     setBusy(true); setMsg('');
@@ -7237,7 +8187,7 @@ function ActionsPage({ state }) {
     <div className="fade-in" style={{ display: 'grid', gap: 16 }}>
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Action Engine — turn diagnosis into done</span>
+          <span>Action Engine — turn diagnosis into done <MetricTooltip metricKey="prompt_priority" /></span>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <select className="form-input" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ width: 140 }}>
               <option value="all">all</option>
@@ -7247,6 +8197,7 @@ function ActionsPage({ state }) {
               <option value="done">done</option>
               <option value="dismissed">dismissed</option>
             </select>
+            <button className="btn btn-sm" onClick={runDueRetracks} disabled={busy || !wsId} title="Run all re-tracks that are due">Run due re-tracks</button>
             <button className="btn btn-sm btn-primary" onClick={harvest} disabled={busy || !wsId}>{busy ? 'Working...' : 'Harvest Actions'}</button>
           </div>
         </div>
@@ -7271,27 +8222,87 @@ function ActionsPage({ state }) {
         {msg && <div style={{ fontSize: 11, marginTop: 8, color: msg.includes('failed') ? 'var(--rose)' : 'var(--emerald)' }}>{msg}</div>}
       </div>
 
+      {/* Workflow board — 6-stage strip */}
+      {workflow && (
+        <div className="card">
+          <div className="card-header">Workflow board</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
+            {['detect','diagnose','prioritize','execute','publish','remeasure'].map(stage => {
+              const count = workflow.by_stage?.[stage] || 0;
+              const stageColors = { detect: 'var(--blue)', diagnose: 'var(--purple)', prioritize: 'var(--amber)', execute: 'var(--cyan)', publish: 'var(--emerald)', remeasure: 'var(--rose)' };
+              const c = stageColors[stage];
+              return (
+                <div key={stage} style={{ border: `1px solid var(--border-subtle)`, borderTop: `3px solid ${c}`, borderRadius: 6, padding: 10, background: 'var(--bg-raised)' }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{stage}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: c, marginTop: 4 }}>{count}</div>
+                </div>
+              );
+            })}
+          </div>
+          {workflow.by_status && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {Object.entries(workflow.by_status).map(([k, v]) => (
+                <span key={k} className="badge gray" style={{ fontSize: 10 }}>{k.replace(/_/g, ' ')}: {v}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pending re-tracks */}
+      {workflow?.pending_retracks && (
+        <div className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Pending re-tracks ({workflow.pending_retracks.length})</span>
+            <button className="btn btn-sm btn-primary" onClick={runDueRetracks} disabled={busy || !wsId}>{busy ? 'Working…' : 'Run Due Re-tracks'}</button>
+          </div>
+          {workflow.pending_retracks.length === 0 ? (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No re-tracks scheduled.</div>
+          ) : (
+            <table className="data-table"><thead><tr><th>Action</th><th>Scheduled at</th></tr></thead><tbody>
+              {workflow.pending_retracks.map((p, i) => (
+                <tr key={p.id || i}>
+                  <td>{p.title || p.action_title || p.action_id || '—'}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{p.scheduled_at ? new Date(p.scheduled_at).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          )}
+        </div>
+      )}
+
       {actions.length === 0 ? (
         <div className="card"><div className="empty-state">⚙<br/>No actions yet. Click Harvest Actions to scan your diagnostics.</div></div>
       ) : actions.map(a => (
         <div className="card" key={a.id} style={{ display: 'grid', gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                 <span className={`badge ${priColor(a.priority || 0)}`}>{a.action_type}</span>
                 <span className="badge gray">{a.status}</span>
+                {a.confidence && <ConfidenceBadge level={a.confidence} />}
                 {a.estimated_impact != null && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>impact {a.estimated_impact}</span>}
+                {(a.before_snapshot_at || a.after_snapshot_at) && (
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    {a.before_snapshot_at && `before: ${new Date(a.before_snapshot_at).toLocaleDateString()}`}
+                    {a.before_snapshot_at && a.after_snapshot_at && ' · '}
+                    {a.after_snapshot_at && `after: ${new Date(a.after_snapshot_at).toLocaleDateString()}`}
+                  </span>
+                )}
               </div>
               <div style={{ fontWeight: 600 }}>{a.title}</div>
               {a.description && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{a.description}</div>}
             </div>
-            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               {a.status === 'pending' && <button className="btn btn-sm btn-primary" onClick={() => generate(a.id)} disabled={busy}>Generate</button>}
               {a.status === 'generated' && <>
                 <button className="btn btn-sm btn-primary" onClick={() => setStatus(a.id, 'approved')} disabled={busy}>Approve</button>
                 <button className="btn btn-sm" onClick={() => setStatus(a.id, 'dismissed')} disabled={busy}>Dismiss</button>
               </>}
               {a.status === 'approved' && <button className="btn btn-sm btn-primary" onClick={() => setStatus(a.id, 'done')} disabled={busy}>Mark Done</button>}
+              <button className="btn btn-sm" onClick={() => beforeSnapshot(a.id)} disabled={busy} title="Snapshot baseline metrics now">Before snapshot</button>
+              <button className="btn btn-sm" onClick={() => afterSnapshot(a.id)} disabled={busy} title="Snapshot post-action metrics">After snapshot</button>
+              <button className="btn btn-sm" onClick={() => scheduleRetrack(a.id)} disabled={busy} title="Schedule a re-track in 7 days">Schedule re-track</button>
               {a.generated_output && <button className="btn btn-sm" onClick={() => setExpanded(x => ({ ...x, [a.id]: !x[a.id] }))}>{expanded[a.id] ? 'Hide' : 'View'} Output</button>}
             </div>
           </div>
