@@ -769,7 +769,7 @@ body {
 -->
 <script>
 (function () {
-  var VERSION = '20260610-auth-session-fix-r3';
+  var VERSION = '20260610-auth-session-fix-r4';
   var BUNDLE = 'dist/dashboard.bundle.js';
 
   function loadScript(src, attrs, onload, onerror) {
@@ -793,7 +793,11 @@ body {
     loadScript(it.src, it.attrs, function () { loadSequential(items, i + 1, done); });
   }
 
+  var dashboardFallbackStarted = false;
+
   function loadDashboardFallback() {
+    if (dashboardFallbackStarted) { return; }
+    dashboardFallbackStarted = true;
     fetch('dashboard.jsx?v=' + VERSION, { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) { throw new Error('dashboard source unavailable'); }
@@ -816,12 +820,21 @@ body {
     loadScript(BUNDLE + '?v=' + VERSION);
   }
 
+  function waitForFallbackDeps() {
+    if (window.React && window.ReactDOM && window.Babel && window.Babel.transform) {
+      loadDashboardFallback();
+    } else {
+      setTimeout(waitForFallbackDeps, 100);
+    }
+  }
+
   function useBabelFallback() {
     loadSequential([
       { src: 'https://unpkg.com/react@18/umd/react.production.min.js', attrs: { crossorigin: '' } },
       { src: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js', attrs: { crossorigin: '' } },
       { src: 'https://unpkg.com/@babel/standalone/babel.min.js' }
     ], 0, loadDashboardFallback);
+    waitForFallbackDeps();
   }
 
   // Probe for the built bundle. Use HEAD so we never download it twice.
