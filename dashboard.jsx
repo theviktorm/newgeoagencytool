@@ -154,6 +154,18 @@ function LoginScreen({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState('login'); // login | register
 
+  const clearLoginError = () => {
+    if (error) setError('');
+  };
+
+  const normalizeLoginError = (message) => {
+    const text = String(message || '').trim();
+    if (/session\s+expired|please\s+sign\s+in\s+again/i.test(text)) {
+      return '';
+    }
+    return text || 'Authentication failed';
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -167,10 +179,11 @@ function LoginScreen({ onLogin }) {
       if (res.success) {
         onLogin(res.data);
       } else {
-        setError(res.error || 'Authentication failed');
+        setError(normalizeLoginError(res.error || 'Authentication failed'));
       }
     } catch (err) {
-      setError(err.message);
+      const nextError = normalizeLoginError(err.message);
+      setError(nextError);
     }
     setLoading(false);
   };
@@ -195,12 +208,14 @@ function LoginScreen({ onLogin }) {
           <div className="form-group">
             <label className="form-label">Email</label>
             <input className="form-input" type="email" value={email}
-              onChange={e => setEmail(e.target.value)} placeholder="you@company.com" />
+              onFocus={clearLoginError}
+              onChange={e => { setEmail(e.target.value); clearLoginError(); }} placeholder="you@company.com" />
           </div>
           <div className="form-group">
             <label className="form-label">Password</label>
             <input className="form-input" type="password" value={password}
-              onChange={e => setPassword(e.target.value)} placeholder="Enter password" />
+              onFocus={clearLoginError}
+              onChange={e => { setPassword(e.target.value); clearLoginError(); }} placeholder="Enter password" />
           </div>
 
           {error && (

@@ -314,7 +314,7 @@ async def serve_dist(asset_path: str):
     if not str(target).startswith(str(dist_root)) or not target.exists():
         raise HTTPException(404, "asset not found")
     media = "application/javascript" if target.suffix == ".js" else None
-    return FileResponse(target, media_type=media)
+    return FileResponse(target, media_type=media, headers=_NO_CACHE_HEADERS)
 
 @app.get("/api/health")
 async def health():
