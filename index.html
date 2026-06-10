@@ -769,7 +769,7 @@ body {
 -->
 <script>
 (function () {
-  var VERSION = '20260610-auth-session-fix-r2';
+  var VERSION = '20260610-auth-session-fix-r3';
   var BUNDLE = 'dist/dashboard.bundle.js';
 
   function loadScript(src, attrs, onload, onerror) {
@@ -782,20 +782,33 @@ body {
     return s;
   }
 
-  // Load scripts strictly in sequence (React → ReactDOM → Babel → dashboard).
-  // Because the dashboard fallback is injected after DOMContentLoaded, Babel
-  // standalone does not always auto-scan it. Explicitly trigger the transform
-  // after the text/babel source is available so React reliably mounts.
-  function loadSequential(items, i) {
+  // Load scripts strictly in sequence (React → ReactDOM → Babel), then fetch
+  // and transform dashboard.jsx explicitly. Dynamically injected external
+  // text/babel scripts are not reliably processed by Babel standalone after
+  // page load, so this keeps the fallback path deterministic in production.
+  function loadSequential(items, i, done) {
     i = i || 0;
-    if (i >= items.length) { return; }
+    if (i >= items.length) { if (done) { done(); } return; }
     var it = items[i];
-    loadScript(it.src, it.attrs, function () {
-      if (it.attrs && it.attrs.type === 'text/babel' && window.Babel && window.Babel.transformScriptTags) {
-        setTimeout(function () { window.Babel.transformScriptTags(); }, 0);
-      }
-      loadSequential(items, i + 1);
-    });
+    loadScript(it.src, it.attrs, function () { loadSequential(items, i + 1, done); });
+  }
+
+  function loadDashboardFallback() {
+    fetch('dashboard.jsx?v=' + VERSION, { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('dashboard source unavailable'); }
+        return res.text();
+      })
+      .then(function (source) {
+        var compiled = window.Babel.transform(source, { presets: ['react'] }).code;
+        var s = document.createElement('script');
+        s.type = 'text/javascript';
+        s.text = compiled + '\n//# sourceURL=dashboard.jsx';
+        document.body.appendChild(s);
+      })
+      .catch(function (err) {
+        console.error('Failed to load dashboard fallback', err);
+      });
   }
 
   function useBundle() {
@@ -807,9 +820,8 @@ body {
     loadSequential([
       { src: 'https://unpkg.com/react@18/umd/react.production.min.js', attrs: { crossorigin: '' } },
       { src: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js', attrs: { crossorigin: '' } },
-      { src: 'https://unpkg.com/@babel/standalone/babel.min.js' },
-      { src: 'dashboard.jsx?v=' + VERSION, attrs: { type: 'text/babel' } }
-    ]);
+      { src: 'https://unpkg.com/@babel/standalone/babel.min.js' }
+    ], 0, loadDashboardFallback);
   }
 
   // Probe for the built bundle. Use HEAD so we never download it twice.
