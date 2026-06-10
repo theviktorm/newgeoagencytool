@@ -769,7 +769,7 @@ body {
 -->
 <script>
 (function () {
-  var VERSION = '20260610-auth-session-fix';
+  var VERSION = '20260610-auth-session-fix-r2';
   var BUNDLE = 'dist/dashboard.bundle.js';
 
   function loadScript(src, attrs, onload, onerror) {
@@ -783,11 +783,19 @@ body {
   }
 
   // Load scripts strictly in sequence (React → ReactDOM → Babel → dashboard).
+  // Because the dashboard fallback is injected after DOMContentLoaded, Babel
+  // standalone does not always auto-scan it. Explicitly trigger the transform
+  // after the text/babel source is available so React reliably mounts.
   function loadSequential(items, i) {
     i = i || 0;
     if (i >= items.length) { return; }
     var it = items[i];
-    loadScript(it.src, it.attrs, function () { loadSequential(items, i + 1); });
+    loadScript(it.src, it.attrs, function () {
+      if (it.attrs && it.attrs.type === 'text/babel' && window.Babel && window.Babel.transformScriptTags) {
+        setTimeout(function () { window.Babel.transformScriptTags(); }, 0);
+      }
+      loadSequential(items, i + 1);
+    });
   }
 
   function useBundle() {
