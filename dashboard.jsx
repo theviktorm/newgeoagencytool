@@ -7137,7 +7137,7 @@ function AuthorityGraphPage({ state }) {
 // BRAND MANAGER
 // ═══════════════════════════════════════════════════════════════
 
-function _relTime(iso) {
+function _reviewRelTime(iso) {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
   if (isNaN(t)) return '—';
@@ -7227,7 +7227,7 @@ function ReviewIntelligencePanel({ wsId }) {
                 <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-secondary)' }}>
                   <span><span style={{ color: 'var(--text-muted)' }}>reviews </span><span style={{ fontFamily: 'var(--font-mono)' }}>{t.review_count ?? '—'}</span></span>
                   <span><span style={{ color: 'var(--text-muted)' }}>avg </span>{t.avg_rating != null ? `${Number(t.avg_rating).toFixed(1)} ★` : '—'}</span>
-                  <span><span style={{ color: 'var(--text-muted)' }}>latest </span>{_relTime(t.latest_review_at)}</span>
+                  <span><span style={{ color: 'var(--text-muted)' }}>latest </span>{_reviewRelTime(t.latest_review_at)}</span>
                 </div>
                 {sentPct != null && (
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
@@ -7324,7 +7324,7 @@ function EntityConsistencyPanel({ wsId }) {
               <div className="metric-value">{result.overall_score != null ? Math.round(result.overall_score) : '—'}</div>
             </div>
             <ConfidenceBadge level={result.confidence || 'estimated'} />
-            {result.observed_at && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>observed {_relTime(result.observed_at)}</span>}
+            {result.observed_at && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>observed {_reviewRelTime(result.observed_at)}</span>}
           </div>
           {msg && <div style={{ fontSize: 11, color: 'var(--rose)' }}>{msg}</div>}
 
@@ -7383,7 +7383,7 @@ function EntityConsistencyPanel({ wsId }) {
                               <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{row.source || '—'}</td>
                               <td style={{ fontSize: 11 }}>{row.value || '—'}</td>
                               <td><span className="badge" style={{ color, background: `${color}22` }}>{row.status || '—'}</span></td>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{_relTime(row.observed_at)}</td>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{_reviewRelTime(row.observed_at)}</td>
                             </tr>
                           );
                         })}
