@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from .auth import (
     authenticate_user, create_token, create_user, create_workspace,
     add_workspace_member, get_user_workspaces, has_permission,
-    init_auth, log_audit, verify_token,
+    init_auth, log_audit, serialize_workspace, verify_token,
 )
 from .database import (
     execute, fetch_all, fetch_one, from_json, gen_id, to_json,
@@ -190,7 +190,8 @@ async def invite_user(req: InviteUserRequest, user: Dict = Depends(require_role(
 async def list_workspaces(user: Dict = Depends(get_current_user)):
     """List workspaces the user belongs to."""
     if user["role"] == "superadmin":
-        workspaces = await fetch_all("SELECT * FROM workspaces WHERE is_active = 1 ORDER BY name")
+        rows = await fetch_all("SELECT * FROM workspaces WHERE is_active = 1 ORDER BY name")
+        workspaces = [serialize_workspace(workspace) for workspace in rows]
     else:
         workspaces = await get_user_workspaces(user["id"])
     return {"success": True, "data": workspaces}

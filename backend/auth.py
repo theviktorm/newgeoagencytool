@@ -17,6 +17,35 @@ from uuid import uuid4
 from .config import settings
 from .database import execute, fetch_all, fetch_one, gen_id
 
+ALLOWED_LOGIN_EMAILS = {
+    "viktor@viktormozsa.com",
+    "bence@bencebarath.com",
+}
+WORKSPACE_JSON_FIELDS = ("domains", "target_countries", "target_languages", "target_models", "settings")
+
+
+def _decode_json_field(value: Any, fallback: Any) -> Any:
+    if value is None:
+        return fallback
+    if isinstance(value, (list, dict)):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def serialize_workspace(workspace: Dict[str, Any]) -> Dict[str, Any]:
+    serialized = dict(workspace)
+    for field in WORKSPACE_JSON_FIELDS:
+        if field in serialized:
+            fallback = {} if field == "settings" else []
+            serialized[field] = _decode_json_field(serialized[field], fallback)
+    return serialized
+
+
 # ═══════════════════════════════════════════════════════════════
 # SCHEMA ADDITIONS — run alongside main schema
 # ═══════════════════════════════════════════════════════════════
@@ -253,10 +282,14 @@ async def create_user(
 
 
 async def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
-    """Authenticate user by email/password. Returns user dict or None."""
+    """Authenticate one of the approved admin users by email/password."""
+    normalized_email = email.strip().lower()
+    if normalized_email not in ALLOWED_LOGIN_EMAILS:
+        return None
+
     user = await fetch_one(
-        "SELECT id, email, name, password_hash, salt, role, is_active FROM users WHERE email = ?",
-        (email,),
+        "SELECT id, email, name, password_hash, salt, role, is_active FROM users WHERE lower(email) = ?",
+        (normalized_email,),
     )
     if not user or not user["is_active"]:
         return None
@@ -271,12 +304,13 @@ async def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any
         "email": user["email"],
         "name": user["name"],
         "role": user["role"],
+        "is_active": user["is_active"],
     }
 
 
 async def get_user_workspaces(user_id: str) -> List[Dict[str, Any]]:
-    """Get all workspaces a user belongs to."""
-    return await fetch_all(
+    """Get all workspaces a user belongs to, with JSON columns decoded for clients."""
+    workspaces = await fetch_all(
         """SELECT w.*, wm.role as member_role
            FROM workspaces w
            JOIN workspace_members wm ON w.id = wm.workspace_id
@@ -284,6 +318,7 @@ async def get_user_workspaces(user_id: str) -> List[Dict[str, Any]]:
            ORDER BY w.name""",
         (user_id,),
     )
+    return [serialize_workspace(workspace) for workspace in workspaces]
 
 
 async def create_workspace(
@@ -335,32 +370,106 @@ async def log_audit(
 # INIT: create default superadmin on first run
 # ═══════════════════════════════════════════════════════════════
 
+async def ensure_superadmin_user(email: str, password: str, name: str = "") -> Dict[str, Any]:
+    """Create or update a configured bootstrap user as an active superadmin."""
+    email = email.strip().lower()
+    display_name = (name or "Momentus Admin").strip() or "Momentus Admin"
+    existing = await fetch_one(
+        "SELECT id, email, name, role FROM users WHERE lower(email) = ?",
+        (email,),
+    )
+    pw_hash, salt = hash_password(password)
+    if existing:
+        await execute(
+            """
+            UPDATE users
+               SET name = ?, password_hash = ?, salt = ?, role = 'superadmin',
+                   is_active = 1, updated_at = datetime('now')
+             WHERE id = ?
+            """,
+            (display_name, pw_hash, salt, existing["id"]),
+        )
+        return {"id": existing["id"], "email": email, "name": display_name, "role": "superadmin"}
+
+    return await create_user(email=email, password=password, name=display_name, role="superadmin")
+
+
+async def _ensure_default_workspace() -> Dict[str, Any]:
+    """Create or return the default workspace used for first-run admin access."""
+    workspace = await fetch_one(
+        "SELECT id, name, slug, brand_name FROM workspaces WHERE slug = ?",
+        ("default",),
+    )
+    if workspace:
+        return dict(workspace)
+
+    ws = await create_workspace(
+        name="Default Workspace",
+        slug="default",
+        brand_name="Momentus AI",
+    )
+    await execute(
+        "INSERT OR IGNORE INTO projects (id, name, config) VALUES (?, ?, ?)",
+        (ws["id"], ws["name"], json.dumps({"workspace_id": ws["id"]})),
+    )
+    return ws
+
+
+def _load_bootstrap_admins() -> List[Dict[str, str]]:
+    """Load bootstrap admins from GEO_BOOTSTRAP_ADMINS JSON or legacy env vars."""
+    admins: List[Dict[str, str]] = []
+    seen_emails = set()
+    raw_admins = (getattr(settings, "bootstrap_admins", "") or "").strip()
+
+    if raw_admins:
+        try:
+            parsed = json.loads(raw_admins)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Invalid GEO_BOOTSTRAP_ADMINS: expected valid JSON") from exc
+        if not isinstance(parsed, list):
+            raise RuntimeError("Invalid GEO_BOOTSTRAP_ADMINS: expected a JSON array")
+        for index, item in enumerate(parsed, start=1):
+            if not isinstance(item, dict):
+                raise RuntimeError(f"Invalid GEO_BOOTSTRAP_ADMINS item #{index}: expected an object")
+            email = str(item.get("email") or "").strip().lower()
+            password = str(item.get("password") or "")
+            name = str(item.get("name") or "Momentus Admin").strip() or "Momentus Admin"
+            if not email or not password:
+                raise RuntimeError(f"Invalid GEO_BOOTSTRAP_ADMINS item #{index}: email and password are required")
+            if email in seen_emails:
+                continue
+            admins.append({"email": email, "password": password, "name": name})
+            seen_emails.add(email)
+
+    legacy_email = (getattr(settings, "bootstrap_admin_email", "") or "").strip().lower()
+    legacy_password = getattr(settings, "bootstrap_admin_password", "") or ""
+    if legacy_email and legacy_password and legacy_email not in seen_emails:
+        admins.append({"email": legacy_email, "password": legacy_password, "name": "Momentus Admin"})
+
+    return admins
+
+
 async def init_auth():
-    """Initialize auth tables and create default superadmin if none exists."""
+    """Initialize auth tables and create or update configured bootstrap superadmins."""
     from .database import get_db
     db = await get_db()
     await db.executescript(AUTH_SCHEMA)
     await db.commit()
 
-    admin = await fetch_one("SELECT id FROM users WHERE role = 'superadmin' LIMIT 1")
-    if not admin:
-        await create_user(
-            email="admin@momentus.ai",
-            password="admin123",
-            name="Momentus Admin",
-            role="superadmin",
+    bootstrap_admins = _load_bootstrap_admins()
+    if not bootstrap_admins:
+        # Keep legacy first-run behavior in local/dev clones only; production should
+        # use GEO_BOOTSTRAP_ADMINS so credentials are not committed to source.
+        if settings.debug:
+            bootstrap_admins = [{"email": "admin@momentus.ai", "password": "admin123", "name": "Momentus Admin"}]
+        else:
+            return
+
+    ws = await _ensure_default_workspace()
+    for admin_spec in bootstrap_admins:
+        admin = await ensure_superadmin_user(
+            email=admin_spec["email"],
+            password=admin_spec["password"],
+            name=admin_spec.get("name", "Momentus Admin"),
         )
-        # Create default workspace
-        ws = await create_workspace(
-            name="Default Workspace",
-            slug="default",
-            brand_name="Momentus AI",
-        )
-        admin = await fetch_one("SELECT id FROM users WHERE role = 'superadmin' LIMIT 1")
-        if admin:
-            await add_workspace_member(ws["id"], admin["id"], "admin")
-        # Mirror as a project so dashboard/overview and ingestion align on id
-        await execute(
-            "INSERT OR IGNORE INTO projects (id, name, config) VALUES (?, ?, ?)",
-            (ws["id"], ws["name"], json.dumps({"workspace_id": ws["id"]})),
-        )
+        await add_workspace_member(ws["id"], admin["id"], "admin")

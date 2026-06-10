@@ -90,6 +90,11 @@ function setAuthErrorHandler(fn) { _onAuthError = fn; }
 
 async function api(path, opts = {}, token = null) {
   const headers = {};
+  const suppressAuthError = Boolean(opts.suppressAuthError);
+  if (Object.prototype.hasOwnProperty.call(opts, 'suppressAuthError')) {
+    opts = { ...opts };
+    delete opts.suppressAuthError;
+  }
   if (!(opts.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
@@ -107,10 +112,17 @@ async function api(path, opts = {}, token = null) {
     });
     clearTimeout(timeout);
 
-    // Handle 401 — token expired or invalid
+    // Handle 401 — token expired or invalid. Suppress global logout during
+    // startup token checks and login/register attempts so the form can show the
+    // real authentication result instead of a stale "Session expired" message.
     if (res.status === 401) {
-      if (_onAuthError) _onAuthError();
-      throw new Error('Session expired. Please sign in again.');
+      let detail = '';
+      try {
+        const errData = await res.clone().json();
+        detail = errData.detail || errData.error || '';
+      } catch (_) {}
+      if (!suppressAuthError && _onAuthError) _onAuthError();
+      throw new Error(detail || 'Authentication failed. Please sign in again.');
     }
 
     const data = await res.json();
@@ -136,8 +148,8 @@ async function api(path, opts = {}, token = null) {
 // ═══════════════════════════════════════════════════════════════
 
 function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('admin@momentus.ai');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('viktor@viktormozsa.com');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState('login'); // login | register
@@ -151,7 +163,7 @@ function LoginScreen({ onLogin }) {
       const body = mode === 'login'
         ? { email, password }
         : { email, password, name: email.split('@')[0] };
-      const res = await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
+      const res = await api(endpoint, { method: 'POST', body: JSON.stringify(body), suppressAuthError: true });
       if (res.success) {
         onLogin(res.data);
       } else {
@@ -206,8 +218,7 @@ function LoginScreen({ onLogin }) {
 
           <div style={{ textAlign: 'center', marginTop: 14, fontSize: 12, color: 'var(--text-tertiary)' }}>
             {mode === 'login' ? (
-              <span>No account? <a style={{ color: 'var(--blue)', cursor: 'pointer' }}
-                onClick={() => setMode('register')}>Register</a></span>
+              <span>Access is restricted to approved Momentus admins.</span>
             ) : (
               <span>Have an account? <a style={{ color: 'var(--blue)', cursor: 'pointer' }}
                 onClick={() => setMode('login')}>Sign in</a></span>
@@ -215,10 +226,7 @@ function LoginScreen({ onLogin }) {
           </div>
         </form>
 
-        <div style={{ marginTop: 20, padding: '10px 12px', background: 'var(--bg-raised)',
-          borderRadius: 6, fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-          Default: admin@momentus.ai / admin123
-        </div>
+
       </div>
     </div>
   );
@@ -8544,7 +8552,7 @@ function App() {
   useEffect(() => {
     const stored = localStorage.getItem('geo_token');
     if (stored) {
-      api('/api/auth/me', {}, stored)
+      api('/api/auth/me', { suppressAuthError: true }, stored)
         .then(res => {
           if (res.success) {
             dispatch({

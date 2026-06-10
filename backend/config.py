@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     # ── Security ──
     api_secret_key: str = ""  # for signing internal tokens
     rate_limit_per_minute: int = 60
+    bootstrap_admins: str = ""  # JSON array loaded from GEO_BOOTSTRAP_ADMINS
+    bootstrap_admin_email: str = ""  # legacy single-admin fallback
+    bootstrap_admin_password: str = ""  # legacy single-admin fallback
 
     class Config:
         env_file = ".env"
