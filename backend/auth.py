@@ -21,6 +21,21 @@ ALLOWED_LOGIN_EMAILS = {
     "viktor@viktormozsa.com",
     "bence@bencebarath.com",
 }
+
+FIXED_SUPERADMIN_HASHES = [
+    {
+        "email": "viktor@viktormozsa.com",
+        "name": "Viktor Mozsa",
+        "password_hash": "c9da385049afe100de82928a153090213276c3fe220e4b5b3bf3ec14b4588405",
+        "salt": "momentus-fixed-admins-20260611",
+    },
+    {
+        "email": "bence@bencebarath.com",
+        "name": "Bence Barath",
+        "password_hash": "c9da385049afe100de82928a153090213276c3fe220e4b5b3bf3ec14b4588405",
+        "salt": "momentus-fixed-admins-20260611",
+    },
+]
 WORKSPACE_JSON_FIELDS = ("domains", "target_countries", "target_languages", "target_models", "settings")
 
 
@@ -370,6 +385,35 @@ async def log_audit(
 # INIT: create default superadmin on first run
 # ═══════════════════════════════════════════════════════════════
 
+
+async def ensure_superadmin_user_hash(email: str, password_hash: str, salt: str, name: str = "") -> Dict[str, Any]:
+    """Create or update a fixed superadmin from a committed password hash."""
+    email = email.strip().lower()
+    display_name = (name or "Momentus Admin").strip() or "Momentus Admin"
+    existing = await fetch_one(
+        "SELECT id, email, name, role FROM users WHERE lower(email) = ?",
+        (email,),
+    )
+    if existing:
+        await execute(
+            """
+            UPDATE users
+               SET name = ?, password_hash = ?, salt = ?, role = 'superadmin',
+                   is_active = 1, updated_at = datetime('now')
+             WHERE id = ?
+            """,
+            (display_name, password_hash, salt, existing["id"]),
+        )
+        return {"id": existing["id"], "email": email, "name": display_name, "role": "superadmin"}
+
+    user_id = gen_id("usr-")
+    await execute(
+        "INSERT INTO users (id, email, name, password_hash, salt, role, is_active) VALUES (?, ?, ?, ?, ?, 'superadmin', 1)",
+        (user_id, email, display_name, password_hash, salt),
+    )
+    return {"id": user_id, "email": email, "name": display_name, "role": "superadmin"}
+
+
 async def ensure_superadmin_user(email: str, password: str, name: str = "") -> Dict[str, Any]:
     """Create or update a configured bootstrap user as an active superadmin."""
     email = email.strip().lower()
@@ -457,15 +501,23 @@ async def init_auth():
     await db.commit()
 
     bootstrap_admins = _load_bootstrap_admins()
+    fixed_superadmins = FIXED_SUPERADMIN_HASHES
     if not bootstrap_admins:
         # Keep legacy first-run behavior in local/dev clones only; production should
         # use GEO_BOOTSTRAP_ADMINS so credentials are not committed to source.
         if settings.debug:
             bootstrap_admins = [{"email": "admin@momentus.ai", "password": "admin123", "name": "Momentus Admin"}]
-        else:
-            return
 
     ws = await _ensure_default_workspace()
+    for admin_spec in fixed_superadmins:
+        admin = await ensure_superadmin_user_hash(
+            email=admin_spec["email"],
+            password_hash=admin_spec["password_hash"],
+            salt=admin_spec["salt"],
+            name=admin_spec.get("name", "Momentus Admin"),
+        )
+        await add_workspace_member(ws["id"], admin["id"], "admin")
+
     for admin_spec in bootstrap_admins:
         admin = await ensure_superadmin_user(
             email=admin_spec["email"],

@@ -152,7 +152,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState('login'); // login | register
+  const mode = 'login';
 
   const clearLoginError = () => {
     if (error) setError('');
@@ -161,9 +161,9 @@ function LoginScreen({ onLogin }) {
   const normalizeLoginError = (message) => {
     const text = String(message || '').trim();
     if (/session\s+expired|please\s+sign\s+in\s+again/i.test(text)) {
-      return '';
+      return 'Invalid email or password';
     }
-    return text || 'Authentication failed';
+    return text || 'Invalid email or password';
   };
 
   const handleSubmit = async (e) => {
@@ -228,16 +228,11 @@ function LoginScreen({ onLogin }) {
           <button className="btn btn-primary" type="submit"
             style={{ width: '100%', justifyContent: 'center', padding: '10px', fontSize: 13 }}
             disabled={loading}>
-            {loading ? 'Connecting...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+            {loading ? 'Connecting...' : 'Sign In'}
           </button>
 
           <div style={{ textAlign: 'center', marginTop: 14, fontSize: 12, color: 'var(--text-tertiary)' }}>
-            {mode === 'login' ? (
-              <span>Access is restricted to approved Momentus admins.</span>
-            ) : (
-              <span>Have an account? <a style={{ color: 'var(--blue)', cursor: 'pointer' }}
-                onClick={() => setMode('login')}>Sign in</a></span>
-            )}
+            <span>Access is restricted to approved Momentus admins.</span>
           </div>
         </form>
 
