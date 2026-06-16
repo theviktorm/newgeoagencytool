@@ -59,6 +59,8 @@ from .entity_onboarding_engine import start_entity_onboarding
 from .entity_onboarding_api import entity_onboarding_router
 from .geo_audit_engine import run_full_audit
 from .geo_audit_api import geo_audit_router
+from .publish_cycle_engine import run_full_publish_cycle
+from .publish_cycle_api import publish_cycle_router
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -268,6 +270,7 @@ app.include_router(workflow_router)
 app.include_router(peec_import_router)
 app.include_router(entity_onboarding_router)
 app.include_router(geo_audit_router)
+app.include_router(publish_cycle_router)
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT MOMENTUS MCP SERVER (Tier 3)
