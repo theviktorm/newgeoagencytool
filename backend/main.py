@@ -53,6 +53,8 @@ from .automation import init_automation
 from .ops_api import ops_router
 from .workflow_engine import init_workflow
 from .workflow_api import workflow_router
+from .peec_import_wizard import init_peec_import
+from .peec_import_api import peec_import_router
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -176,6 +178,7 @@ async def startup():
         await init_db()
         await init_auth()
         await init_workflow()
+        await init_peec_import()
         logger.info("Core init complete")
     except Exception as _e:
         logger.error("CORE INIT FAILED (continuing degraded): %s", _e, exc_info=True)
@@ -258,6 +261,7 @@ app.include_router(dashboard_router)
 app.include_router(workspace_router)
 app.include_router(ops_router)
 app.include_router(workflow_router)
+app.include_router(peec_import_router)
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT MOMENTUS MCP SERVER (Tier 3)
