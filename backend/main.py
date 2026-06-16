@@ -51,6 +51,8 @@ from .auth import init_auth
 from .dashboard_api import auth_router, dashboard_router, workspace_router
 from .automation import init_automation
 from .ops_api import ops_router
+from .workflow_engine import init_workflow
+from .workflow_api import workflow_router
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -173,6 +175,7 @@ async def startup():
         logger.info("Initializing core database + auth...")
         await init_db()
         await init_auth()
+        await init_workflow()
         logger.info("Core init complete")
     except Exception as _e:
         logger.error("CORE INIT FAILED (continuing degraded): %s", _e, exc_info=True)
@@ -254,6 +257,7 @@ app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(workspace_router)
 app.include_router(ops_router)
+app.include_router(workflow_router)
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT MOMENTUS MCP SERVER (Tier 3)
