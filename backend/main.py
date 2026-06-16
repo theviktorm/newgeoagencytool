@@ -55,6 +55,8 @@ from .workflow_engine import init_workflow
 from .workflow_api import workflow_router
 from .peec_import_wizard import init_peec_import
 from .peec_import_api import peec_import_router
+from .entity_onboarding_engine import start_entity_onboarding
+from .entity_onboarding_api import entity_onboarding_router
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -262,6 +264,7 @@ app.include_router(workspace_router)
 app.include_router(ops_router)
 app.include_router(workflow_router)
 app.include_router(peec_import_router)
+app.include_router(entity_onboarding_router)
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT MOMENTUS MCP SERVER (Tier 3)
