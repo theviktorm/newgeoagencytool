@@ -658,3 +658,57 @@ async def _scrape_single(
         "faqs_count": len(extracted["faqs"]),
         "has_schema": bool(extracted["schema_markup"]),
     }
+
+async def scrape_business_profile(url: str) -> Dict[str, Any]:
+    """
+    Specialized scraper for business profiles.
+    Extracts NAP (Name, Address, Phone) and other business details.
+    """
+    fetcher = PageFetcher()
+    try:
+        fetch_result = await fetcher.fetch(url)
+        if not fetch_result["html"]:
+            return {"error": fetch_result["error"]}
+        
+        soup = BeautifulSoup(fetch_result["html"], "lxml")
+        
+        # Basic extraction
+        profile = {
+            "business_name": None,
+            "phone": None,
+            "email": None,
+            "website": url,
+            "address": None,
+            "city": None,
+            "state": None,
+            "zip": None,
+            "description": None,
+        }
+        
+        # Try to find business name in title or h1
+        title = soup.find("title")
+        if title:
+            profile["business_name"] = title.get_text(strip=True).split("|")[0].split("-")[0].strip()
+        
+        h1 = soup.find("h1")
+        if h1:
+            profile["business_name"] = h1.get_text(strip=True)
+            
+        # Regex for phone
+        phone_match = re.search(r"(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", fetch_result["html"])
+        if phone_match:
+            profile["phone"] = phone_match.group(0)
+            
+        # Regex for email
+        email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", fetch_result["html"])
+        if email_match:
+            profile["email"] = email_match.group(0)
+            
+        # Meta description for business description
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        if meta_desc:
+            profile["description"] = meta_desc.get("content")
+            
+        return profile
+    finally:
+        await fetcher.close()

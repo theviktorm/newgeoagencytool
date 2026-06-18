@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Optional
 
 from .database import execute, fetch_all, fetch_one, from_json, gen_id, to_json
-from .workflow_engine import create_action, update_action
+from .action_engine import execute, gen_id, to_json, ACTION_TYPES
 
 logger = logging.getLogger("geo.workflows")
 
@@ -21,11 +21,10 @@ async def create_local_seo_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a local SEO action."""
-    action_id = await create_action(
-        project_id,
-        f"local_seo_{action_type}",
-        f"Local SEO: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"local_seo_{action_type}", f"Local SEO: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -72,11 +71,10 @@ async def create_gbp_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a Google Business Profile action."""
-    action_id = await create_action(
-        project_id,
-        f"gbp_{action_type}",
-        f"Google Business Profile: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"gbp_{action_type}", f"Google Business Profile: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -125,11 +123,10 @@ async def create_review_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a review management action."""
-    action_id = await create_action(
-        project_id,
-        f"review_{action_type}",
-        f"Review Management: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"review_{action_type}", f"Review Management: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -176,11 +173,10 @@ async def create_authority_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create an authority-building action."""
-    action_id = await create_action(
-        project_id,
-        f"authority_{action_type}",
-        f"Authority Building: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"authority_{action_type}", f"Authority Building: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -227,11 +223,10 @@ async def create_offsite_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create an off-site authority action."""
-    action_id = await create_action(
-        project_id,
-        f"offsite_{action_type}",
-        f"Off-Site Authority: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"offsite_{action_type}", f"Off-Site Authority: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -278,11 +273,10 @@ async def create_reddit_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a Reddit engagement action."""
-    action_id = await create_action(
-        project_id,
-        f"reddit_{action_type}",
-        f"Reddit: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"reddit_{action_type}", f"Reddit: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -319,11 +313,10 @@ async def create_youtube_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a YouTube engagement action."""
-    action_id = await create_action(
-        project_id,
-        f"youtube_{action_type}",
-        f"YouTube: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"youtube_{action_type}", f"YouTube: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -362,11 +355,10 @@ async def create_pr_action(
     project_id: str, entity_id: str, action_type: str, details: Dict
 ) -> str:
     """Create a PR/content action."""
-    action_id = await create_action(
-        project_id,
-        f"pr_{action_type}",
-        f"PR/Content: {action_type.replace('_', ' ').title()}",
-        details,
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (action_id, project_id, f"pr_{action_type}", f"PR/Content: {action_type.replace('_', ' ').title()}", details.get("description", ""), to_json(details))
     )
     return action_id
 
@@ -434,14 +426,20 @@ async def create_action_from_template(
     if not template:
         raise ValueError(f"Template {template_name} not found")
     
-    action_id = await create_action(
-        project_id,
-        f"{workflow_type}_{template_name}",
-        template.get("title"),
-        {
-            "description": template.get("description"),
-            "checklist": template.get("checklist", []),
-            "template_name": template_name,
-        },
+    action_id = gen_id("act-")
+    await execute(
+        "INSERT INTO geo_actions (id, workspace_id, action_type, title, description, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            action_id, 
+            project_id, 
+            f"{workflow_type}_{template_name}", 
+            template.get("title"), 
+            template.get("description"), 
+            to_json({
+                "description": template.get("description"),
+                "checklist": template.get("checklist", []),
+                "template_name": template_name,
+            })
+        )
     )
     return action_id
