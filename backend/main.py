@@ -62,6 +62,7 @@ from .geo_audit_api import geo_audit_router
 from .publish_cycle_engine import run_full_publish_cycle
 from .publish_cycle_api import publish_cycle_router
 from .specialized_workflows_api import workflows_router
+from .approval_gates_api import approval_router
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -273,6 +274,7 @@ app.include_router(entity_onboarding_router)
 app.include_router(geo_audit_router)
 app.include_router(publish_cycle_router)
 app.include_router(workflows_router)
+app.include_router(approval_router)
 
 # ═══════════════════════════════════════════════════════════════
 # MOUNT MOMENTUS MCP SERVER (Tier 3)
