@@ -493,6 +493,40 @@ def _load_bootstrap_admins() -> List[Dict[str, str]]:
     return admins
 
 
+# ═══════════════════════════════════════════════════════════════
+# AUTH DEPENDENCY HELPERS (for FastAPI route protection)
+# ═══════════════════════════════════════════════════════════════
+
+from fastapi import Depends, Header, HTTPException
+
+
+async def get_current_user(authorization: str = Header(default="")) -> Dict[str, Any]:
+    """Extract and verify the current user from Authorization header."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="No authorization token")
+    token = authorization.replace("Bearer ", "")
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = await fetch_one("SELECT id, email, name, role, is_active FROM users WHERE id = ?", (payload["sub"],))
+    if not user or not user["is_active"]:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return dict(user)
+
+
+def require_role(min_role: str):
+    """Factory for role-based access checks."""
+    async def checker(user: Dict = Depends(get_current_user)):
+        if not has_permission(user["role"], min_role):
+            raise HTTPException(status_code=403, detail=f"Requires {min_role} role or higher")
+        return user
+    return checker
+
+
+# ═══════════════════════════════════════════════════════════════
+# INITIALIZATION
+# ═══════════════════════════════════════════════════════════════
+
 async def init_auth():
     """Initialize auth tables and create or update configured bootstrap superadmins."""
     from .database import get_db

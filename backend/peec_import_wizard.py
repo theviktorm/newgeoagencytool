@@ -13,7 +13,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .database import execute, fetch_all, fetch_one, from_json, gen_id, to_json
-from .peec_connector import PeecConnector
 
 logger = logging.getLogger("geo.peec_import")
 

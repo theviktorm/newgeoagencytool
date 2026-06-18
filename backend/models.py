@@ -12,6 +12,15 @@ from pydantic import BaseModel, Field
 
 
 # ═══════════════════════════════════════════════════════════════
+# BASE REQUEST CLASS
+# ═══════════════════════════════════════════════════════════════
+
+class BaseRequest(BaseModel):
+    """Base request model for all API endpoints."""
+    pass
+
+
+# ═══════════════════════════════════════════════════════════════
 # NORMALIZED DATA MODEL — the canonical internal format
 # ═══════════════════════════════════════════════════════════════
 
