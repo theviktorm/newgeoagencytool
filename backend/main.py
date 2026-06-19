@@ -309,14 +309,14 @@ _NO_CACHE_HEADERS = {
 }
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     index = _FRONTEND_DIR / "index.html"
     if index.exists():
         return FileResponse(index, media_type="text/html", headers=_NO_CACHE_HEADERS)
     return {"status": "ok", "service": "Momentus AI API", "version": "1.0.0"}
 
-@app.get("/dashboard.jsx")
+@app.api_route("/dashboard.jsx", methods=["GET", "HEAD"])
 async def serve_dashboard_jsx():
     jsx = _FRONTEND_DIR / "dashboard.jsx"
     if jsx.exists():
@@ -324,7 +324,7 @@ async def serve_dashboard_jsx():
                             headers=_NO_CACHE_HEADERS)
     raise HTTPException(404, "dashboard.jsx not found")
 
-@app.get("/dist/{asset_path:path}")
+@app.api_route("/dist/{asset_path:path}", methods=["GET", "HEAD"])
 async def serve_dist(asset_path: str):
     """Serve the Vite production bundle when present. index.html HEAD-probes
     /dist/dashboard.bundle.js and uses it if found, else falls back to Babel.
