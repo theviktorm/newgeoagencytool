@@ -1,0 +1,74 @@
+  if (!state.user) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  return (
+    <AuthContext.Provider value={{ user: state.user, token: state.token }}>
+      <div className="app-shell">
+        <Sidebar state={state} dispatch={dispatch} />
+        <div className="main-content">
+          <Header state={state} />
+          <div className="main-body">
+            {(() => {
+              const ViewComponent = {
+                warroom: WarRoomPage,
+                battlefield: PromptBattlefieldPage,
+                revenue: RevenuePriorityPage,
+                authority: AuthorityScorePage,
+                metrics: MetricDictionaryPage,
+                citation_intel: CitationIntelPage,
+                attack_map: AttackMapPage,
+                graph: AuthorityGraphPage,
+                journey: BuyerJourneyPage,
+                aio: AioOverviewPage,
+                actions: ActionsPage,
+                reddit: RedditCommandPage,
+                schema_engine: SchemaEnginePage,
+                metadata_studio: MetadataStudioPage,
+                youtube: YouTubeGeoPage,
+                content: ContentStudioPage,
+                publishing: PublishingPage,
+                import: DataImportPage,
+                sources: SourcesPage,
+                analysis: AnalysisPage,
+                brands: BrandManagerPage,
+                workflow: GeoWorkflowPage,
+                alerts: AlertsPage,
+                backtest: BacktestPage,
+                report: ComparativeReportPage,
+                jobs: JobQueuePage,
+                workspaces: WorkspacesPage,
+                users: UsersPage,
+                competitors: CompetitorsPage,
+                competitor_profiles: CompetitorProfilesPage,
+                integrations: IntegrationsPage,
+                audit: AuditPage,
+                settings: SettingsPage,
+              }[state.view] || WarRoomPage;
+              return <ViewComponent state={state} dispatch={dispatch} />;
+            })()}
+          </div>
+        </div>
+      </div>
+
+      {state.error && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, background: 'var(--rose-dim)',
+          border: '1px solid var(--rose)', color: 'var(--rose)', padding: '10px 16px',
+          borderRadius: 8, fontSize: 12, maxWidth: 360, zIndex: 9999,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span>{state.error}</span>
+          <button style={{ background: 'none', border: 'none', color: 'var(--rose)', cursor: 'pointer', fontSize: 16 }}
+            onClick={() => dispatch({ type: 'SET_ERROR', error: null })}>{'\u00D7'}</button>
+        </div>
+      )}
+    </AuthContext.Provider>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GEO WORKFLOW PAGE
+// ═══════════════════════════════════════════════════════════════
+
+function GeoWorkflowPage({ state, dispatch }) {

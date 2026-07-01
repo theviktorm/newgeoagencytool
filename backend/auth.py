@@ -26,13 +26,13 @@ FIXED_SUPERADMIN_HASHES = [
     {
         "email": "viktor@viktormozsa.com",
         "name": "Viktor Mozsa",
-        "password_hash": "c9da385049afe100de82928a153090213276c3fe220e4b5b3bf3ec14b4588405",
+        "password_hash": "121c8aadcb8c3c5cac228c990345aac23c0b72f440f60ad3956e4590160aafd4",
         "salt": "momentus-fixed-admins-20260611",
     },
     {
         "email": "bence@bencebarath.com",
         "name": "Bence Barath",
-        "password_hash": "c9da385049afe100de82928a153090213276c3fe220e4b5b3bf3ec14b4588405",
+        "password_hash": "121c8aadcb8c3c5cac228c990345aac23c0b72f440f60ad3956e4590160aafd4",
         "salt": "momentus-fixed-admins-20260611",
     },
 ]
