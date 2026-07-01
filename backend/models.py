@@ -28,19 +28,68 @@ class PeecRecord(BaseModel):
     """Normalized record from Peec data. Every field mapped and validated."""
     model_config = {"protected_namespaces": ()}
     id: str = ""
-    url: str
-    title: str = ""
-    usage_count: int = 0
-    citation_count: int = 0
-    citation_rate: float = 0.0
-    retrievals: int = 0
-    topic: str = "Uncategorized"
-    tags: List[str] = Field(default_factory=list)
-    model_source: str = "Other"
-    project_id: str = ""
-    import_batch_id: str = ""
-    imported_at: str = ""
-    raw_data: Dict[str, Any] = Field(default_factory=dict)
+    # Core Peec.ai fields
+    prompt: str = Field(..., description="The AI prompt text")
+    query: Optional[str] = Field(None, description="The search query if different from prompt")
+    question: Optional[str] = Field(None, description="The question if different from prompt")
+    ai_engine: str = Field(..., description="The AI engine/platform (e.g., ChatGPT, Gemini)")
+    platform: Optional[str] = Field(None, description="Specific platform if different from engine")
+    model: Optional[str] = Field(None, description="Specific model used (e.g., GPT-4, Claude 3)")
+    date: datetime = Field(..., description="Date/timestamp of the Peec.ai run")
+    run_id: Optional[str] = Field(None, description="Peec.ai run ID")
+
+    # Brand-specific visibility
+    brand_mentioned: bool = Field(False, description="True if the brand was mentioned")
+    brand_rank: Optional[int] = Field(None, description="Brand's rank/position in the answer")
+    brand_position: Optional[str] = Field(None, description="Brand's position description")
+    visibility_score: Optional[float] = Field(None, description="Overall visibility score")
+    sentiment: Optional[str] = Field(None, description="Sentiment towards the brand")
+    share_of_voice: Optional[float] = Field(None, description="Brand's share of voice")
+
+    # Answer content
+    answer_text: Optional[str] = Field(None, description="Full AI answer text")
+    answer_summary: Optional[str] = Field(None, description="Summary of the AI answer")
+
+    # Citations
+    cited_urls: List[str] = Field(default_factory=list, description="URLs cited in the AI answer")
+    citation_urls: List[str] = Field(default_factory=list, description="URLs identified as citations")
+    sources: List[str] = Field(default_factory=list, description="Source names/domains cited")
+    source_type: Optional[str] = Field(None, description="Type of source (e.g., own website, review site)")
+    url_cited: Optional[str] = Field(None, description="Specific URL cited")
+    domain_cited: Optional[str] = Field(None, description="Domain of the cited URL")
+    reddit_citation: Optional[str] = Field(None, description="Reddit citation/source if applicable")
+
+    # Competitors
+    competitor_names: List[str] = Field(default_factory=list, description="Names of competitors mentioned")
+    competitor_domains: List[str] = Field(default_factory=list, description="Domains of competitors mentioned")
+    competitor_ranks: List[int] = Field(default_factory=list, description="Ranks of competitors")
+    competitor_positions: List[str] = Field(default_factory=list, description="Positions of competitors")
+    competitor_visibility: Optional[float] = Field(None, description="Competitor visibility score")
+
+    # Categorization
+    topic: Optional[str] = Field(None, description="Topic of the prompt/answer")
+    cluster: Optional[str] = Field(None, description="Cluster grouping for the prompt")
+    tag: List[str] = Field(default_factory=list, description="Tags associated with the prompt")
+    buyer_intent: Optional[str] = Field(None, description="Buyer intent of the prompt")
+
+    # Geo-specifics
+    location: Optional[str] = Field(None, description="Geographic location of the query")
+    country: Optional[str] = Field(None, description="Country of the query")
+    language: Optional[str] = Field(None, description="Language of the query")
+    device: Optional[str] = Field(None, description="Device used for the query")
+
+    # AI Overview specific
+    aio_presence: Optional[bool] = Field(None, alias="AI_Overview_presence", description="True if AI Overview was present")
+
+    # Internal tracking
+    prompt_score: Optional[float] = Field(None, description="Internal score for the prompt")
+    model_response_id: Optional[str] = Field(None, description="ID from the AI model response")
+    project_id: str = Field(..., description="ID of the associated project")
+    import_batch_id: str = Field(..., description="ID of the import batch")
+    imported_at: datetime = Field(..., description="Timestamp of import")
+    raw_data: Dict[str, Any] = Field(default_factory=dict, description="Raw data from the Peec.ai export")
+    confidence: Optional[str] = Field(None, description="Confidence level of the data")
+    data_source: Optional[str] = Field(None, description="Source of the data (e.g., Peec.ai import)")
 
 
 class Source(BaseModel):
@@ -139,6 +188,22 @@ class Draft(BaseModel):
     source_snapshot: Dict[str, Any] = Field(default_factory=dict)
     prompt_snapshot: str = ""
     created_at: str = ""
+
+
+class ImportBatch(BaseModel):
+    """Record of a Peec.ai data import batch."""
+    id: str = ""
+    workspace_id: str
+    file_name: str
+    source: str = "Peec.ai"
+    imported_by: str
+    imported_at: datetime
+    rows_total: int = 0
+    rows_success: int = 0
+    rows_failed: int = 0
+    warnings: Optional[str] = None
+    mapping_config: Dict[str, str] = Field(default_factory=dict)
+    status: str = "completed"  # pending | processing | completed | failed
 
 
 class Measurement(BaseModel):
@@ -351,12 +416,42 @@ PEEC_FIELD_MAP = {
     "citation_count": ["citation_count", "citations", "citationcount", "cited", "total_citations", "mentions"],
     "citation_rate": ["citation_rate", "citationrate", "rate", "cite_rate"],
     "retrievals": ["retrievals", "retrieval_count", "retrievalcount", "retrieved"],
-    "topic": ["topic", "category", "subject", "theme", "user", "query", "prompt", "queries"],
-    "tags": ["tags", "labels", "keywords", "tag_list"],
-    "model_source": ["model_source", "modelsource", "model", "source_model", "ai_model", "engine"],
-    "country": ["country", "region", "geo", "location"],
-    "position": ["position", "rank", "pos"],
+    "prompt": ["prompt", "query", "question", "prompt_text"],
+    "ai_engine": ["ai_engine", "platform", "model", "engine", "ai_model"],
+    "date": ["date", "timestamp", "run_date", "run_timestamp", "imported_at"],
+    "run_id": ["run_id", "peec_run_id"],
+    "brand_mentioned": ["brand_mentioned", "mentioned_brand", "brand_in_answer"],
+    "brand_rank": ["brand_rank", "brand_position_rank"],
+    "brand_position": ["brand_position", "brand_pos_desc"],
+    "visibility_score": ["visibility_score", "overall_visibility"],
     "sentiment": ["sentiment", "sentiment_score"],
+    "share_of_voice": ["share_of_voice", "sov"],
+    "answer_text": ["answer_text", "ai_answer", "response_text"],
+    "answer_summary": ["answer_summary", "ai_answer_summary"],
+    "cited_urls": ["cited_urls", "citation_urls", "sources_urls", "cited_links"],
+    "sources": ["sources", "source_names", "citation_sources"],
+    "source_type": ["source_type", "citation_type"],
+    "url_cited": ["url_cited", "single_cited_url"],
+    "domain_cited": ["domain_cited", "cited_domain"],
+    "reddit_citation": ["reddit_citation", "reddit_source"],
+    "competitor_names": ["competitor_names", "competitors_mentioned"],
+    "competitor_domains": ["competitor_domains", "competitor_urls"],
+    "competitor_ranks": ["competitor_ranks", "competitor_positions_rank"],
+    "competitor_positions": ["competitor_positions", "competitor_pos_desc"],
+    "competitor_visibility": ["competitor_visibility", "comp_visibility_score"],
+    "topic": ["topic", "category", "subject", "theme", "user", "query", "prompt", "queries"],
+    "cluster": ["cluster", "topic_cluster"],
+    "tag": ["tags", "labels", "keywords", "tag_list"],
+    "buyer_intent": ["buyer_intent", "intent_type"],
+    "location": ["location", "geo_location"],
+    "country": ["country", "region", "geo"],
+    "language": ["language", "lang"],
+    "device": ["device", "user_device"],
+    "aio_presence": ["aio_presence", "ai_overview_presence", "google_aio"],
+    "prompt_score": ["prompt_score", "internal_prompt_score"],
+    "model_response_id": ["model_response_id", "ai_response_id"],
+    "confidence": ["confidence", "data_confidence"],
+    "data_source": ["data_source", "source_of_data"],
     "created": ["created", "created_at", "date", "timestamp", "measured_at"],
     "assistant": ["assistant", "response", "answer", "ai_response"],
 }

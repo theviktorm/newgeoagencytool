@@ -34,19 +34,85 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS peec_records (
     id              TEXT PRIMARY KEY,
     project_id      TEXT NOT NULL REFERENCES projects(id),
-    url             TEXT NOT NULL,
-    title           TEXT DEFAULT '',
-    usage_count     INTEGER DEFAULT 0,
-    citation_count  INTEGER DEFAULT 0,
-    citation_rate   REAL DEFAULT 0.0,
-    retrievals      INTEGER DEFAULT 0,
-    topic           TEXT DEFAULT 'Uncategorized',
-    tags            TEXT DEFAULT '[]',     -- JSON array
-    model_source    TEXT DEFAULT 'Other',
-    raw_data        TEXT DEFAULT '{}',     -- full original row as JSON
-    import_batch_id TEXT,
-    imported_at     TEXT DEFAULT (datetime('now'))
+    prompt          TEXT NOT NULL,
+    query           TEXT,
+    question        TEXT,
+    ai_engine       TEXT NOT NULL,
+    platform        TEXT,
+    model           TEXT,
+    date            TEXT NOT NULL,
+    run_id          TEXT,
+    brand_mentioned BOOLEAN DEFAULT 0,
+    brand_rank      INTEGER,
+    brand_position  TEXT,
+    visibility_score REAL,
+    sentiment       TEXT,
+    share_of_voice  REAL,
+    answer_text     TEXT,
+    answer_summary  TEXT,
+    cited_urls      TEXT DEFAULT '[]',
+    citation_urls   TEXT DEFAULT '[]',
+    sources         TEXT DEFAULT '[]',
+    source_type     TEXT,
+    url_cited       TEXT,
+    domain_cited    TEXT,
+    reddit_citation TEXT,
+    competitor_names TEXT DEFAULT '[]',
+    competitor_domains TEXT DEFAULT '[]',
+    competitor_ranks TEXT DEFAULT '[]',
+    competitor_positions TEXT DEFAULT '[]',
+    competitor_visibility REAL,
+    topic           TEXT,
+    cluster         TEXT,
+    tag             TEXT DEFAULT '[]',
+    buyer_intent    TEXT,
+    location        TEXT,
+    country         TEXT,
+    language        TEXT,
+    device          TEXT,
+    aio_presence    BOOLEAN,
+    prompt_score    REAL,
+    model_response_id TEXT,
+    raw_data        TEXT DEFAULT '{}',
+    import_batch_id TEXT NOT NULL REFERENCES import_batches(id),
+    imported_at     TEXT NOT NULL,
+    confidence      TEXT,
+    data_source     TEXT DEFAULT 'Peec.ai import'
 );
+CREATE INDEX IF NOT EXISTS idx_peec_project ON peec_records(project_id);
+CREATE INDEX IF NOT EXISTS idx_peec_prompt ON peec_records(prompt);
+CREATE INDEX IF NOT EXISTS idx_peec_ai_engine ON peec_records(ai_engine);
+CREATE INDEX IF NOT EXISTS idx_peec_date ON peec_records(date);
+CREATE INDEX IF NOT EXISTS idx_peec_import_batch ON peec_records(import_batch_id);
+CREATE INDEX IF NOT EXISTS idx_peec_brand_mentioned ON peec_records(brand_mentioned);
+CREATE INDEX IF NOT EXISTS idx_peec_topic ON peec_records(topic);
+CREATE INDEX IF NOT EXISTS idx_peec_cluster ON peec_records(cluster);
+CREATE INDEX IF NOT EXISTS idx_peec_buyer_intent ON peec_records(buyer_intent);
+CREATE INDEX IF NOT EXISTS idx_peec_location ON peec_records(location);
+CREATE INDEX IF NOT EXISTS idx_peec_country ON peec_records(country);
+CREATE INDEX IF NOT EXISTS idx_peec_language ON peec_records(language);
+CREATE INDEX IF NOT EXISTS idx_peec_device ON peec_records(device);
+CREATE INDEX IF NOT EXISTS idx_peec_aio_presence ON peec_records(aio_presence);
+
+-- ─── Import Batches ───
+CREATE TABLE IF NOT EXISTS import_batches (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL,
+    file_name       TEXT NOT NULL,
+    source          TEXT DEFAULT 'Peec.ai',
+    imported_by     TEXT NOT NULL,
+    imported_at     TEXT NOT NULL,
+    rows_total      INTEGER DEFAULT 0,
+    rows_success    INTEGER DEFAULT 0,
+    rows_failed     INTEGER DEFAULT 0,
+    warnings        TEXT,
+    mapping_config  TEXT DEFAULT '{}',
+    status          TEXT DEFAULT 'completed'
+);
+CREATE INDEX IF NOT EXISTS idx_import_batches_workspace ON import_batches(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_import_batches_status ON import_batches(status);
+
+-- ─── Deduplicated source URLs ───
 CREATE INDEX IF NOT EXISTS idx_peec_project ON peec_records(project_id);
 CREATE INDEX IF NOT EXISTS idx_peec_topic ON peec_records(topic);
 CREATE INDEX IF NOT EXISTS idx_peec_model ON peec_records(model_source);
